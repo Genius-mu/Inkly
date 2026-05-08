@@ -11,11 +11,22 @@
   --color-signal-soft: #eff6ff;
 }
 
+/* hide native scrollbar — used on horizontally-scrolling toolbars */
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }
 .no-scrollbar {
   scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+/* respect iOS safe-area insets so the toolbar doesn't sit under the home bar */
+.safe-bottom {
+  padding-bottom: max(1.5rem, env(safe-area-inset-bottom));
+}
+.safe-x {
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
 }
 
 @keyframes fade-in {

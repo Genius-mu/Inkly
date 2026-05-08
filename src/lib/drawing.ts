@@ -98,3 +98,37 @@ export function renderScene(
     drawStroke(ctx, stroke);
   }
 }
+
+/**
+ * Export the current canvas as a PNG file. Composites a white background
+ * underneath the drawing so the saved image isn't transparent.
+ */
+export function exportCanvasAsPNG(
+  canvas: HTMLCanvasElement,
+  filename = "inkly-drawing.png",
+): void {
+  // Create an offscreen canvas the same size as the live one.
+  const out = document.createElement("canvas");
+  out.width = canvas.width;
+  out.height = canvas.height;
+  const ctx = out.getContext("2d");
+  if (!ctx) return;
+
+  // White background, then composite the live canvas on top.
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, out.width, out.height);
+  ctx.drawImage(canvas, 0, 0);
+
+  // Trigger a download.
+  out.toBlob((blob) => {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }, "image/png");
+}

@@ -16,9 +16,10 @@ interface ToolbarProps {
   onUndo: () => void;
   onRedo: () => void;
   onClear: () => void;
+  onExport: () => void;
 }
 
-export function Toolbar({ onUndo, onRedo, onClear }: ToolbarProps) {
+export function Toolbar({ onUndo, onRedo, onClear, onExport }: ToolbarProps) {
   const color = useStore((s) => s.color);
   const setColor = useStore((s) => s.setColor);
   const size = useStore((s) => s.size);
@@ -36,13 +37,13 @@ export function Toolbar({ onUndo, onRedo, onClear }: ToolbarProps) {
       role="toolbar"
       aria-label="Drawing tools"
       className="
-        pointer-events-auto flex items-center gap-1
-        rounded-2xl border border-neutral-200 bg-white p-1.5
+        no-scrollbar pointer-events-auto flex max-w-[calc(100vw-1.5rem)] items-center gap-1
+        overflow-x-auto rounded-2xl border border-neutral-200 bg-white p-1.5
         shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_-8px_rgba(0,0,0,0.12)]
       "
     >
       {/* ─── pen / eraser segmented toggle ─── */}
-      <div className="flex rounded-xl bg-neutral-100 p-0.5">
+      <div className="flex shrink-0 rounded-xl bg-neutral-100 p-0.5">
         <SegmentButton
           active={tool === "pen"}
           onClick={() => setTool("pen")}
@@ -62,7 +63,7 @@ export function Toolbar({ onUndo, onRedo, onClear }: ToolbarProps) {
       <Divider />
 
       {/* ─── color palette ─── */}
-      <div className="flex items-center gap-1 px-1">
+      <div className="flex shrink-0 items-center gap-1 px-1">
         {PALETTE.map((c) => (
           <button
             key={c}
@@ -71,11 +72,11 @@ export function Toolbar({ onUndo, onRedo, onClear }: ToolbarProps) {
             aria-label={`Color ${c}`}
             aria-pressed={color === c && tool === "pen"}
             className={clsx(
-              "group relative h-7 w-7 rounded-lg transition-transform",
+              "group relative h-7 w-7 shrink-0 rounded-lg transition-transform",
               "hover:-translate-y-0.5 active:translate-y-0",
               color === c &&
                 tool === "pen" &&
-                "ring-2 ring-neutral-900 ring-offset-2",
+                "ring-2 ring-offset-2 ring-neutral-900",
             )}
           >
             <span
@@ -89,7 +90,7 @@ export function Toolbar({ onUndo, onRedo, onClear }: ToolbarProps) {
       <Divider />
 
       {/* ─── brush sizes ─── */}
-      <div className="flex items-center gap-0.5 px-1">
+      <div className="flex shrink-0 items-center gap-0.5 px-1">
         {SIZES.map((s) => (
           <button
             key={s}
@@ -98,7 +99,7 @@ export function Toolbar({ onUndo, onRedo, onClear }: ToolbarProps) {
             aria-label={`Size ${s}`}
             aria-pressed={size === s}
             className={clsx(
-              "grid h-9 w-9 place-items-center rounded-lg transition-colors",
+              "grid h-9 w-9 shrink-0 place-items-center rounded-lg transition-colors",
               size === s ? "bg-neutral-900" : "hover:bg-neutral-100",
             )}
           >
@@ -119,12 +120,15 @@ export function Toolbar({ onUndo, onRedo, onClear }: ToolbarProps) {
       <Divider />
 
       {/* ─── actions ─── */}
-      <div className="flex items-center gap-0.5">
+      <div className="flex shrink-0 items-center gap-0.5">
         <IconButton onClick={onUndo} disabled={!canUndo} label="Undo (⌘Z)">
           <UndoIcon />
         </IconButton>
         <IconButton onClick={onRedo} disabled={!canRedo} label="Redo (⇧⌘Z)">
           <RedoIcon />
+        </IconButton>
+        <IconButton onClick={onExport} disabled={!canUndo} label="Save as PNG">
+          <DownloadIcon />
         </IconButton>
         <IconButton onClick={onClear} label="Clear" tone="danger">
           <TrashIcon />
@@ -137,7 +141,9 @@ export function Toolbar({ onUndo, onRedo, onClear }: ToolbarProps) {
 /* ─── small primitives ────────────────────────────────────────── */
 
 function Divider() {
-  return <span className="mx-0.5 h-6 w-px bg-neutral-200" aria-hidden />;
+  return (
+    <span className="mx-0.5 h-6 w-px shrink-0 bg-neutral-200" aria-hidden />
+  );
 }
 
 function SegmentButton({
@@ -159,7 +165,7 @@ function SegmentButton({
       aria-label={label}
       aria-pressed={active}
       className={clsx(
-        "grid h-8 w-9 place-items-center rounded-lg transition-all",
+        "grid h-8 w-9 shrink-0 place-items-center rounded-lg transition-all",
         active
           ? "bg-white text-neutral-900 shadow-sm"
           : "text-neutral-500 hover:text-neutral-900",
@@ -191,7 +197,7 @@ function IconButton({
       title={label}
       aria-label={label}
       className={clsx(
-        "grid h-9 w-9 place-items-center rounded-lg transition-colors",
+        "grid h-9 w-9 shrink-0 place-items-center rounded-lg transition-colors",
         "disabled:cursor-not-allowed disabled:opacity-30",
         tone === "danger"
           ? "text-neutral-500 hover:bg-red-50 hover:text-red-600 disabled:hover:bg-transparent disabled:hover:text-neutral-500"
@@ -203,7 +209,7 @@ function IconButton({
   );
 }
 
-/* ─── icons (24px stroke, optical-sized 20px display) ─────────── */
+/* ─── icons ───────────────────────────────────────────────────── */
 
 const iconBase = "h-[18px] w-[18px]";
 
@@ -281,6 +287,20 @@ function RedoIcon() {
       />
       <path
         d="M20 9H9a5 5 0 000 10h4"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function DownloadIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={iconBase}>
+      <path
+        d="M12 4v12m0 0l-4-4m4 4l4-4M4 20h16"
         stroke="currentColor"
         strokeWidth="1.6"
         strokeLinecap="round"

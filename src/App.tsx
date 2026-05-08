@@ -3,12 +3,16 @@ import { Header } from "./components/Header";
 import { Toolbar } from "./components/Toolbar";
 import { Shortcuts } from "./components/Shortcuts";
 import { useStore } from "./lib/store";
-import { drawStroke, renderScene, setupCanvas } from "./lib/drawing";
+import {
+  drawStroke,
+  exportCanvasAsPNG,
+  renderScene,
+  setupCanvas,
+} from "./lib/drawing";
 import { uid } from "./lib/utils";
 import type { Point, Stroke } from "./types";
 
 export default function App() {
-  const [confirmingClear, setConfirmingClear] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
   /** The stroke currently being drawn — null when not drawing. */
@@ -20,26 +24,31 @@ export default function App() {
   const redo = useStore((s) => s.redo);
   const clearAll = useStore((s) => s.clearAll);
 
+  const [confirmingClear, setConfirmingClear] = useState(false);
+
   /* ───────── canvas lifecycle ───────── */
 
-  // Set up canvas on mount + handle window resize.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     const handleResize = () => {
       ctxRef.current = setupCanvas(canvas);
-      // Re-render the scene — resize wipes the bitmap.
       if (ctxRef.current)
         renderScene(ctxRef.current, useStore.getState().strokes);
     };
     handleResize();
 
     window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
+    // On mobile Safari, the URL bar showing/hiding fires `resize` —
+    // useful for us, the same handler does the right thing.
+    window.addEventListener("orientationchange", handleResize);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      window.removeEventListener("orientationchange", handleResize);
+    };
   }, []);
 
-  // Re-render whenever strokes change (added, undone, redone, cleared).
   useEffect(() => {
     if (ctxRef.current) renderScene(ctxRef.current, strokes);
   }, [strokes]);
@@ -67,7 +76,6 @@ export default function App() {
       points: [point],
       createdAt: Date.now(),
     };
-    // Render the first dot immediately for tap-feel.
     if (ctxRef.current) drawStroke(ctxRef.current, drawingStrokeRef.current);
   };
 
@@ -78,8 +86,6 @@ export default function App() {
     const point = pointerPos(e);
     stroke.points.push(point);
 
-    // Draw just the new segment for smoothness while drawing.
-    // (The full smoothed version replaces this on pointerup.)
     if (stroke.points.length >= 2) {
       const a = stroke.points[stroke.points.length - 2];
       const b = stroke.points[stroke.points.length - 1];
@@ -109,26 +115,35 @@ export default function App() {
       const stroke = drawingStrokeRef.current;
       drawingStrokeRef.current = null;
       if (!stroke) return;
-      // Commit the stroke to the store. Triggers a full re-render
-      // through the useEffect above, replacing the live segments
-      // with the smoothed version.
       addStroke(stroke);
     },
     [addStroke],
   );
 
+  /* ───────── export ───────── */
+
+  const handleExport = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    exportCanvasAsPNG(canvas, `inkly-${stamp}.png`);
+  }, []);
+
   /* ───────── keyboard shortcuts ───────── */
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setConfirmingClear(false);
+        return;
+      }
       const meta = e.metaKey || e.ctrlKey;
       if (meta && e.key.toLowerCase() === "z") {
         e.preventDefault();
         if (e.shiftKey) redo();
         else undo();
       } else if (e.key.toLowerCase() === "e" && !meta) {
-        const t = useStore.getState().tool;
-        useStore.getState().setTool(t === "eraser" ? "pen" : "eraser");
+        useStore.getState().setTool("eraser");
       } else if (e.key.toLowerCase() === "p" && !meta) {
         useStore.getState().setTool("pen");
       }
@@ -140,11 +155,11 @@ export default function App() {
   /* ───────── render ───────── */
 
   return (
-    <div className="grid h-screen grid-rows-[auto_1fr] overflow-hidden bg-white">
+    <div className="grid h-dvh grid-rows-[auto_1fr] overflow-hidden bg-white">
       <Header />
 
       <main className="relative overflow-hidden bg-neutral-50">
-        {/* dot grid background — purely decorative, sits behind the canvas */}
+        {/* dot grid background */}
         <div
           aria-hidden
           className="pointer-events-none absolute inset-0"
@@ -170,7 +185,7 @@ export default function App() {
           onPointerCancel={handlePointerUp}
         />
 
-        {/* empty state — visible only when no strokes exist */}
+        {/* empty state */}
         {strokes.length === 0 && (
           <div className="pointer-events-none absolute inset-0 grid animate-fade-in place-items-center">
             <div className="flex flex-col items-center gap-3 text-center">
@@ -209,26 +224,29 @@ export default function App() {
         )}
 
         {/* floating toolbar */}
-        <div className="pointer-events-none absolute inset-x-0 bottom-6 flex justify-center">
+        <div className="safe-bottom pointer-events-none absolute inset-x-0 bottom-0 flex justify-center px-3 pb-6">
           <Toolbar
             onUndo={undo}
             onRedo={redo}
             onClear={() => setConfirmingClear(true)}
+            onExport={handleExport}
           />
         </div>
 
+        {/* shortcuts trigger + popover */}
         <Shortcuts />
+
         {/* clear confirmation dialog */}
         {confirmingClear && (
           <div
-            className="absolute inset-0 z-50 grid place-items-center bg-neutral-900/30 backdrop-blur-sm animate-fade-in"
+            className="absolute inset-0 z-50 grid animate-fade-in place-items-center bg-neutral-900/30 px-4 backdrop-blur-sm"
             onClick={() => setConfirmingClear(false)}
             role="dialog"
             aria-modal="true"
             aria-labelledby="confirm-title"
           >
             <div
-              className="w-[min(380px,calc(100%-2rem))] rounded-2xl bg-white p-6 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_24px_60px_-20px_rgba(0,0,0,0.4)]"
+              className="w-[min(380px,calc(100%-1rem))] rounded-2xl bg-white p-6 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_24px_60px_-20px_rgba(0,0,0,0.4)]"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="mb-4 grid h-10 w-10 place-items-center rounded-xl bg-red-50">
