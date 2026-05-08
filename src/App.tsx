@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Header } from "./components/Header";
 import { Toolbar } from "./components/Toolbar";
+import { Shortcuts } from "./components/Shortcuts";
 import { useStore } from "./lib/store";
 import { drawStroke, renderScene, setupCanvas } from "./lib/drawing";
 import { uid } from "./lib/utils";
 import type { Point, Stroke } from "./types";
 
 export default function App() {
+  const [confirmingClear, setConfirmingClear] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
   /** The stroke currently being drawn — null when not drawing. */
@@ -208,8 +210,77 @@ export default function App() {
 
         {/* floating toolbar */}
         <div className="pointer-events-none absolute inset-x-0 bottom-6 flex justify-center">
-          <Toolbar onUndo={undo} onRedo={redo} onClear={clearAll} />
+          <Toolbar
+            onUndo={undo}
+            onRedo={redo}
+            onClear={() => setConfirmingClear(true)}
+          />
         </div>
+
+        <Shortcuts />
+        {/* clear confirmation dialog */}
+        {confirmingClear && (
+          <div
+            className="absolute inset-0 z-50 grid place-items-center bg-neutral-900/30 backdrop-blur-sm animate-fade-in"
+            onClick={() => setConfirmingClear(false)}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="confirm-title"
+          >
+            <div
+              className="w-[min(380px,calc(100%-2rem))] rounded-2xl bg-white p-6 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_24px_60px_-20px_rgba(0,0,0,0.4)]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="mb-4 grid h-10 w-10 place-items-center rounded-xl bg-red-50">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  className="h-5 w-5 text-red-600"
+                >
+                  <path
+                    d="M12 9v4M12 17h.01M10.3 3.86l-8.49 14.14A2 2 0 003.51 21h16.98a2 2 0 001.71-3l-8.49-14.14a2 2 0 00-3.41 0z"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </div>
+
+              <h3
+                id="confirm-title"
+                className="text-lg font-semibold tracking-tight text-neutral-900"
+              >
+                Clear the canvas?
+              </h3>
+              <p className="mt-1 text-sm text-neutral-500">
+                All {strokes.length} stroke{strokes.length === 1 ? "" : "s"}{" "}
+                will be removed. This can't be undone.
+              </p>
+
+              <div className="mt-5 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setConfirmingClear(false)}
+                  className="rounded-lg border border-neutral-200 bg-white px-4 py-2 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-50"
+                >
+                  Keep drawing
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    clearAll();
+                    setConfirmingClear(false);
+                  }}
+                  className="rounded-lg bg-neutral-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-600"
+                  autoFocus
+                >
+                  Clear it
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );
