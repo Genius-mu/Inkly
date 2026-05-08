@@ -127,6 +127,8 @@ export default function App() {
       } else if (e.key.toLowerCase() === "e" && !meta) {
         const t = useStore.getState().tool;
         useStore.getState().setTool(t === "eraser" ? "pen" : "eraser");
+      } else if (e.key.toLowerCase() === "p" && !meta) {
+        useStore.getState().setTool("pen");
       }
     };
     window.addEventListener("keydown", onKey);
@@ -136,10 +138,27 @@ export default function App() {
   /* ───────── render ───────── */
 
   return (
-    <div className="grid h-screen grid-rows-[auto_1fr_auto] overflow-hidden bg-white">
+    <div className="grid h-screen grid-rows-[auto_1fr] overflow-hidden bg-white">
       <Header />
 
-      <main className="relative overflow-hidden">
+      <main className="relative overflow-hidden bg-neutral-50">
+        {/* dot grid background — purely decorative, sits behind the canvas */}
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0"
+          style={{
+            backgroundImage:
+              "radial-gradient(circle, #d4d4d4 1px, transparent 1px)",
+            backgroundSize: "24px 24px",
+            backgroundPosition: "0 0",
+            maskImage:
+              "radial-gradient(ellipse at center, black 40%, transparent 90%)",
+            WebkitMaskImage:
+              "radial-gradient(ellipse at center, black 40%, transparent 90%)",
+          }}
+        />
+
+        {/* drawing surface */}
         <canvas
           ref={canvasRef}
           className="absolute inset-0 block h-full w-full cursor-crosshair touch-none"
@@ -148,6 +167,44 @@ export default function App() {
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerUp}
         />
+
+        {/* empty state — visible only when no strokes exist */}
+        {strokes.length === 0 && (
+          <div className="pointer-events-none absolute inset-0 grid animate-fade-in place-items-center">
+            <div className="flex flex-col items-center gap-3 text-center">
+              <div className="grid h-12 w-12 place-items-center rounded-2xl bg-white shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_-8px_rgba(0,0,0,0.12)]">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  className="h-5 w-5 text-neutral-400"
+                >
+                  <path
+                    d="M3 21l3.6-1 11-11-2.6-2.6-11 11L3 21z"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d="M14 7l3-3 2.6 2.6-3 3"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </div>
+              <div>
+                <p className="text-sm font-medium text-neutral-700">
+                  Start drawing
+                </p>
+                <p className="mt-0.5 font-mono text-[11px] text-neutral-400">
+                  Click and drag anywhere on the canvas
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* floating toolbar */}
         <div className="pointer-events-none absolute inset-x-0 bottom-6 flex justify-center">
