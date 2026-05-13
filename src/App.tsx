@@ -437,3 +437,6 @@ function isTyping(target: EventTarget | null): boolean {
   const tag = target.tagName;
   return tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable;
 }
+
+
+// Gosh
