@@ -4,12 +4,7 @@ import { Toolbar } from "./components/Toolbar";
 import { Shortcuts } from "./components/Shortcuts";
 import { useStore } from "./lib/store";
 import { ZoomControls } from "./components/ZoomControls";
-import {
-  drawStroke,
-  exportCanvasAsPNG,
-  renderScene,
-  setupCanvas,
-} from "./lib/drawing";
+import { exportCanvasAsPNG, renderScene, setupCanvas } from "./lib/drawing";
 import { uid } from "./lib/utils";
 import type { Point, Stroke } from "./types";
 
@@ -437,6 +432,5 @@ function isTyping(target: EventTarget | null): boolean {
   const tag = target.tagName;
   return tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable;
 }
-
 
 // Gosh

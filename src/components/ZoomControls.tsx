@@ -12,7 +12,6 @@ interface Props {
 export function ZoomControls({ canvasRef }: Props) {
   const view = useStore((s) => s.view);
   const zoomAt = useStore((s) => s.zoomAt);
-  const setView = useStore((s) => s.setView);
   const resetView = useStore((s) => s.resetView);
 
   const [presetsOpen, setPresetsOpen] = useState(false);
