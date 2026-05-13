@@ -2,32 +2,50 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Header } from "./components/Header";
 import { Toolbar } from "./components/Toolbar";
 import { Shortcuts } from "./components/Shortcuts";
-import { useStore } from "./lib/store";
 import { ZoomControls } from "./components/ZoomControls";
+import { useStore } from "./lib/store";
 import { exportCanvasAsPNG, renderScene, setupCanvas } from "./lib/drawing";
 import { uid } from "./lib/utils";
 import type { Point, Stroke } from "./types";
 
-/** Mouse button codes for `event.button`. */
 const BUTTON_LEFT = 0;
 const BUTTON_MIDDLE = 1;
 const BUTTON_RIGHT = 2;
+
+/** Compute midpoint and distance between two points. */
+function pinchMetrics(a: Point, b: Point) {
+  const midX = (a.x + b.x) / 2;
+  const midY = (a.y + b.y) / 2;
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  const distance = Math.hypot(dx, dy);
+  return { midX, midY, distance };
+}
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
   const drawingStrokeRef = useRef<Stroke | null>(null);
 
-  /** True while the user is actively panning (pointer captured). */
+  /** True while the user is actively panning with mouse (pointer captured). */
   const panningRef = useRef(false);
-  /** True while spacebar is held — the user could pan if they press down. */
   const isSpaceHeldRef = useRef(false);
-  /** Last pointer position during a pan, used to compute deltas. */
   const lastPanPosRef = useRef<Point | null>(null);
-  /** Cursor state for the canvas — kept as React state so Tailwind updates. */
   const [cursorMode, setCursorMode] = useState<"draw" | "grab" | "grabbing">(
     "draw",
   );
+
+  /**
+   * Map of active touch pointers (by pointerId → current canvas-relative pos).
+   * Used to detect single-finger draw vs. multi-finger pan/pinch.
+   */
+  const touchesRef = useRef(new Map<number, Point>());
+  /** State of the in-progress pinch gesture (two fingers down). */
+  const pinchStateRef = useRef<{
+    midX: number;
+    midY: number;
+    distance: number;
+  } | null>(null);
 
   const strokes = useStore((s) => s.strokes);
   const view = useStore((s) => s.view);
@@ -63,33 +81,26 @@ export default function App() {
     };
   }, []);
 
-  // Re-render whenever strokes OR view change.
   useEffect(() => {
     if (ctxRef.current) renderScene(ctxRef.current, strokes, view);
   }, [strokes, view]);
 
-  /* ───────── pan & zoom: wheel and contextmenu ───────── */
+  /* ───────── wheel + contextmenu (desktop) ───────── */
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    // Cmd/Ctrl + scroll → zoom toward cursor.
-    // We use a native non-passive listener so we can preventDefault
-    // (React's onWheel is passive by default and can't block page scroll).
     const onWheel = (e: WheelEvent) => {
       if (!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
       const rect = canvas.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
-      // Smooth, exponential zoom — natural feel across trackpads and mice.
-      // deltaY > 0 means scroll down → zoom out.
       const factor = Math.exp(-e.deltaY * 0.0015);
       zoomAt(factor, x, y);
     };
 
-    // Block the browser context menu so right-click can pan.
     const onContextMenu = (e: MouseEvent) => e.preventDefault();
 
     canvas.addEventListener("wheel", onWheel, { passive: false });
@@ -100,11 +111,10 @@ export default function App() {
     };
   }, [zoomAt]);
 
-  /* ───────── pan & zoom: spacebar tracking ───────── */
+  /* ───────── spacebar tracking ───────── */
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      // Don't trigger spacebar pan if user is typing in an input.
       if (e.code === "Space" && !isTyping(e.target)) {
         e.preventDefault();
         if (!isSpaceHeldRef.current) {
@@ -119,7 +129,6 @@ export default function App() {
         if (!panningRef.current) setCursorMode("draw");
       }
     };
-    // If the window loses focus while space is held, release it.
     const onBlur = () => {
       isSpaceHeldRef.current = false;
       if (!panningRef.current) setCursorMode("draw");
@@ -144,7 +153,6 @@ export default function App() {
     };
   };
 
-  /** Should this pointer-down begin a pan instead of a draw? */
   const shouldPan = (e: React.PointerEvent<HTMLCanvasElement>): boolean => {
     return (
       isSpaceHeldRef.current ||
@@ -153,20 +161,44 @@ export default function App() {
     );
   };
 
-  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    e.currentTarget.setPointerCapture(e.pointerId);
-    const screenPoint = pointerPos(e);
+  /** Abandon any in-progress stroke. Used when a second finger lands. */
+  const abandonStroke = () => {
+    drawingStrokeRef.current = null;
+    if (ctxRef.current) {
+      const { strokes: s, view: v } = useStore.getState();
+      renderScene(ctxRef.current, s, v);
+    }
+  };
 
-    if (shouldPan(e)) {
-      panningRef.current = true;
-      lastPanPosRef.current = screenPoint;
-      setCursorMode("grabbing");
-      return;
+  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const screenPoint = pointerPos(e);
+    e.currentTarget.setPointerCapture(e.pointerId);
+
+    // Touch handling — track every active touch in the map.
+    if (e.pointerType === "touch") {
+      touchesRef.current.set(e.pointerId, screenPoint);
+
+      // Second (or later) finger: cancel any draw, initialize pinch state.
+      if (touchesRef.current.size >= 2) {
+        abandonStroke();
+        const [a, b] = Array.from(touchesRef.current.values());
+        pinchStateRef.current = pinchMetrics(a, b);
+        return;
+      }
+
+      // First finger: fall through to draw logic below.
+    } else {
+      // Mouse / pen: existing pan-vs-draw decision.
+      if (shouldPan(e)) {
+        panningRef.current = true;
+        lastPanPosRef.current = screenPoint;
+        setCursorMode("grabbing");
+        return;
+      }
+      if (e.button !== BUTTON_LEFT) return;
     }
 
-    // Only left button starts a draw.
-    if (e.button !== BUTTON_LEFT) return;
-
+    // Begin a new stroke.
     const { color, size, tool, view: v } = useStore.getState();
     const worldPoint: Point = {
       x: (screenPoint.x - v.panX) / v.zoom,
@@ -193,7 +225,32 @@ export default function App() {
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const screenPoint = pointerPos(e);
 
-    // Panning has priority — if we're in a pan, ignore stroke logic.
+    // Update touch tracking BEFORE deciding what to do.
+    if (e.pointerType === "touch" && touchesRef.current.has(e.pointerId)) {
+      touchesRef.current.set(e.pointerId, screenPoint);
+    }
+
+    // Multi-finger pinch / pan — runs every move while two fingers are down.
+    if (e.pointerType === "touch" && touchesRef.current.size >= 2) {
+      const [a, b] = Array.from(touchesRef.current.values());
+      const next = pinchMetrics(a, b);
+      const prev = pinchStateRef.current;
+      if (prev) {
+        // Pan by midpoint delta.
+        const dx = next.midX - prev.midX;
+        const dy = next.midY - prev.midY;
+        if (dx !== 0 || dy !== 0) panBy(dx, dy);
+        // Zoom by distance ratio, toward the current midpoint.
+        if (prev.distance > 0 && next.distance > 0) {
+          const factor = next.distance / prev.distance;
+          if (factor !== 1) zoomAt(factor, next.midX, next.midY);
+        }
+      }
+      pinchStateRef.current = next;
+      return;
+    }
+
+    // Mouse pan — existing behavior.
     if (panningRef.current && lastPanPosRef.current) {
       const dx = screenPoint.x - lastPanPosRef.current.x;
       const dy = screenPoint.y - lastPanPosRef.current.y;
@@ -202,6 +259,7 @@ export default function App() {
       return;
     }
 
+    // Drawing (single finger / mouse left-button).
     const stroke = drawingStrokeRef.current;
     if (!stroke || !ctxRef.current) return;
 
@@ -222,7 +280,23 @@ export default function App() {
         /* may already be released */
       }
 
-      // End of pan?
+      // Touch released — remove from the tracking map.
+      if (e.pointerType === "touch") {
+        touchesRef.current.delete(e.pointerId);
+        // If we drop from 2 fingers to 1, end the pinch but don't resume drawing.
+        // The user has to lift fully and re-tap to start a new stroke.
+        if (touchesRef.current.size < 2) {
+          pinchStateRef.current = null;
+        }
+        if (touchesRef.current.size >= 1) {
+          // Still touching — discard any in-progress stroke; next stroke must
+          // come from a fresh pointerdown.
+          drawingStrokeRef.current = null;
+          return;
+        }
+      }
+
+      // Mouse pan ended.
       if (panningRef.current) {
         panningRef.current = false;
         lastPanPosRef.current = null;
@@ -230,7 +304,7 @@ export default function App() {
         return;
       }
 
-      // End of stroke.
+      // Stroke committed.
       const stroke = drawingStrokeRef.current;
       drawingStrokeRef.current = null;
       if (!stroke) return;
@@ -248,7 +322,7 @@ export default function App() {
     exportCanvasAsPNG(canvas, `inkly-${stamp}.png`);
   }, []);
 
-  /* ───────── keyboard shortcuts (existing) ───────── */
+  /* ───────── keyboard shortcuts ───────── */
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -285,7 +359,6 @@ export default function App() {
       <Header />
 
       <main className="relative overflow-hidden bg-neutral-50">
-        {/* dot grid background */}
         <div
           aria-hidden
           className="pointer-events-none absolute inset-0"
@@ -340,7 +413,7 @@ export default function App() {
                   Start drawing
                 </p>
                 <p className="mt-0.5 font-mono text-[11px] text-neutral-400">
-                  Click and drag — hold space to pan, ⌘/Ctrl + scroll to zoom
+                  Single finger to draw — two fingers to pan and zoom
                 </p>
               </div>
             </div>
@@ -355,8 +428,8 @@ export default function App() {
             onExport={handleExport}
           />
         </div>
-        <ZoomControls canvasRef={canvasRef} />
 
+        <ZoomControls canvasRef={canvasRef} />
         <Shortcuts />
 
         {confirmingClear && (
@@ -426,10 +499,8 @@ export default function App() {
   );
 }
 
-/** Don't trigger keyboard shortcuts while the user is typing in an input. */
 function isTyping(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   const tag = target.tagName;
   return tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable;
 }
-
