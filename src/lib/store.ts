@@ -1,21 +1,25 @@
 /**
  * Inkly — global state
  *
- * Single source of truth for: strokes on the canvas, undo/redo
- * stacks, and the current tool/color/size selection.
- *
- * Why Zustand and not Redux/Context? It's ~1KB, has no boilerplate,
- * and `useStore(s => s.strokes)` is all the API you need to know.
+ * Single source of truth for: strokes on the canvas (world-space),
+ * the current pan/zoom view, the undo/redo stacks, and the active
+ * tool/color/size selection.
  */
 
 import { create } from "zustand";
-import type { Stroke } from "../types";
+import type { Stroke, View } from "../types";
+
+const MIN_ZOOM = 0.1; // 10%
+const MAX_ZOOM = 8; // 800%
+const DEFAULT_VIEW: View = { panX: 0, panY: 0, zoom: 1 };
 
 interface InklyState {
   // Drawing state
   strokes: Stroke[];
-  /** Locally-undone strokes, ready to be redone. */
   redoStack: Stroke[];
+
+  // View state
+  view: View;
 
   // Tool state
   color: string;
@@ -28,10 +32,25 @@ interface InklyState {
   redo: () => void;
   clearAll: () => void;
 
+  // View actions
+  setView: (view: View) => void;
+  panBy: (dx: number, dy: number) => void;
+  /**
+   * Zoom toward a fixed screen point — the point on the canvas where
+   * the mouse / pinch center is stays put while everything scales.
+   * Without this, zooming feels like the canvas is sliding under you.
+   */
+  zoomAt: (factor: number, screenX: number, screenY: number) => void;
+  resetView: () => void;
+
   // Tool actions
   setColor: (color: string) => void;
   setSize: (size: number) => void;
   setTool: (tool: "pen" | "eraser") => void;
+}
+
+function clampZoom(z: number): number {
+  return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z));
 }
 
 export const useStore = create<InklyState>((set, get) => ({
@@ -39,7 +58,9 @@ export const useStore = create<InklyState>((set, get) => ({
   strokes: [],
   redoStack: [],
 
-  color: "#1a1a1a",
+  view: DEFAULT_VIEW,
+
+  color: "#0a0a0a",
   size: 4,
   tool: "pen",
 
@@ -47,7 +68,6 @@ export const useStore = create<InklyState>((set, get) => ({
   addStroke: (stroke) =>
     set((state) => ({
       strokes: [...state.strokes, stroke],
-      // A new action invalidates the redo stack — same as any editor.
       redoStack: [],
     })),
 
@@ -72,6 +92,40 @@ export const useStore = create<InklyState>((set, get) => ({
   },
 
   clearAll: () => set({ strokes: [], redoStack: [] }),
+
+  // ─── view actions ───────────────────────────────────────────
+  setView: (view) => set({ view: { ...view, zoom: clampZoom(view.zoom) } }),
+
+  panBy: (dx, dy) =>
+    set((state) => ({
+      view: {
+        ...state.view,
+        panX: state.view.panX + dx,
+        panY: state.view.panY + dy,
+      },
+    })),
+
+  zoomAt: (factor, screenX, screenY) =>
+    set((state) => {
+      const { panX, panY, zoom } = state.view;
+      const nextZoom = clampZoom(zoom * factor);
+      // The world point under the cursor before zoom:
+      //   wx = (screenX - panX) / zoom
+      //   wy = (screenY - panY) / zoom
+      // After zoom, we want the same world point under the cursor:
+      //   screenX = wx * nextZoom + nextPanX  →  nextPanX = screenX - wx * nextZoom
+      const wx = (screenX - panX) / zoom;
+      const wy = (screenY - panY) / zoom;
+      return {
+        view: {
+          panX: screenX - wx * nextZoom,
+          panY: screenY - wy * nextZoom,
+          zoom: nextZoom,
+        },
+      };
+    }),
+
+  resetView: () => set({ view: DEFAULT_VIEW }),
 
   // ─── tool actions ───────────────────────────────────────────
   setColor: (color) => set({ color, tool: "pen" }),

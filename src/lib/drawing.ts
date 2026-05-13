@@ -2,14 +2,22 @@
  * Inkly — drawing engine
  *
  * Pure rendering. Knows nothing about React or state management.
- * Given a canvas and a list of strokes, it draws.
+ * Given a canvas, a view transform, and a list of strokes, it draws.
  */
 
-import type { Stroke } from "../types";
+import type { Point, Stroke, View } from "../types";
+
+export const IDENTITY_VIEW: View = { panX: 0, panY: 0, zoom: 1 };
+
+/* ───────── canvas setup ───────── */
 
 /**
- * Configures a canvas for crisp rendering on hi-DPI (retina) displays.
- * Call this on mount and again on every window resize.
+ * Configures a canvas for crisp rendering on hi-DPI displays.
+ * Call this on mount and again on every resize.
+ *
+ * Note: the returned context is reset to a clean state but does NOT
+ * have the view transform applied — callers apply that via
+ * `renderScene` (or `applyView` if drawing manually).
  */
 export function setupCanvas(
   canvas: HTMLCanvasElement,
@@ -20,8 +28,6 @@ export function setupCanvas(
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
 
-  // The bitmap is sized to the device pixel ratio, but we scale the
-  // drawing context back down so 1 unit = 1 CSS pixel for our code.
   canvas.width = Math.round(rect.width * dpr);
   canvas.height = Math.round(rect.height * dpr);
   ctx.scale(dpr, dpr);
@@ -32,7 +38,7 @@ export function setupCanvas(
   return ctx;
 }
 
-/** Wipe the canvas. */
+/** Wipe the canvas, ignoring any current transform. */
 export function clearCanvas(ctx: CanvasRenderingContext2D): void {
   const { canvas } = ctx;
   ctx.save();
@@ -41,9 +47,32 @@ export function clearCanvas(ctx: CanvasRenderingContext2D): void {
   ctx.restore();
 }
 
+/* ───────── coordinate conversion ───────── */
+
+/** Convert a screen-space point (relative to canvas) to world space. */
+export function screenToWorld(p: Point, view: View): Point {
+  return {
+    x: (p.x - view.panX) / view.zoom,
+    y: (p.y - view.panY) / view.zoom,
+  };
+}
+
+/** Convert a world-space point to screen space. */
+export function worldToScreen(p: Point, view: View): Point {
+  return {
+    x: p.x * view.zoom + view.panX,
+    y: p.y * view.zoom + view.panY,
+  };
+}
+
+/* ───────── stroke rendering ───────── */
+
 /**
- * Draw a single stroke. Uses quadratic curves between midpoints —
- * the standard trick for smoothing freehand input.
+ * Draw a single stroke in world space. Assumes the caller has
+ * already applied the view transform (translate + scale) to ctx.
+ *
+ * Uses quadratic curves between midpoints — the standard trick for
+ * smoothing freehand input.
  */
 export function drawStroke(
   ctx: CanvasRenderingContext2D,
@@ -58,7 +87,6 @@ export function drawStroke(
   ctx.globalCompositeOperation =
     tool === "eraser" ? "destination-out" : "source-over";
 
-  // A single point becomes a dot.
   if (points.length === 1) {
     const p = points[0];
     ctx.beginPath();
@@ -72,7 +100,6 @@ export function drawStroke(
   ctx.beginPath();
   ctx.moveTo(points[0].x, points[0].y);
 
-  // Smooth through midpoints between each pair of points.
   for (let i = 1; i < points.length - 1; i++) {
     const cur = points[i];
     const next = points[i + 1];
@@ -81,23 +108,49 @@ export function drawStroke(
     ctx.quadraticCurveTo(cur.x, cur.y, midX, midY);
   }
 
-  // Final segment — straight line to the last point.
   const last = points[points.length - 1];
   ctx.lineTo(last.x, last.y);
   ctx.stroke();
   ctx.restore();
 }
 
-/** Render all strokes in order. Later strokes paint over earlier ones. */
+/**
+ * Render every stroke with a view transform applied.
+ *
+ * The transform is `translate(panX, panY) → scale(zoom, zoom)` —
+ * meaning world coordinates get multiplied by zoom first, then
+ * shifted by pan. We pass this combined matrix to setTransform
+ * directly (instead of separate translate/scale calls) so we don't
+ * have to worry about clobbering the DPR scale that setupCanvas applied.
+ */
 export function renderScene(
   ctx: CanvasRenderingContext2D,
   strokes: Stroke[],
+  view: View = IDENTITY_VIEW,
 ): void {
   clearCanvas(ctx);
+  const dpr = window.devicePixelRatio || 1;
+  ctx.save();
+  // setTransform takes (a, b, c, d, e, f) where the matrix is:
+  //   [ a c e ]
+  //   [ b d f ]
+  //   [ 0 0 1 ]
+  // Combined DPR scale × world transform: dpr * (translate(pan) ∘ scale(zoom))
+  ctx.setTransform(
+    view.zoom * dpr,
+    0,
+    0,
+    view.zoom * dpr,
+    view.panX * dpr,
+    view.panY * dpr,
+  );
   for (const stroke of strokes) {
     drawStroke(ctx, stroke);
   }
+  ctx.restore();
 }
+
+/* ───────── export ───────── */
 
 /**
  * Export the current canvas as a PNG file. Composites a white background

@@ -3,6 +3,7 @@ import { Header } from "./components/Header";
 import { Toolbar } from "./components/Toolbar";
 import { Shortcuts } from "./components/Shortcuts";
 import { useStore } from "./lib/store";
+import { ZoomControls } from "./components/ZoomControls";
 import {
   drawStroke,
   exportCanvasAsPNG,
@@ -12,17 +13,35 @@ import {
 import { uid } from "./lib/utils";
 import type { Point, Stroke } from "./types";
 
+/** Mouse button codes for `event.button`. */
+const BUTTON_LEFT = 0;
+const BUTTON_MIDDLE = 1;
+const BUTTON_RIGHT = 2;
+
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
-  /** The stroke currently being drawn — null when not drawing. */
   const drawingStrokeRef = useRef<Stroke | null>(null);
 
+  /** True while the user is actively panning (pointer captured). */
+  const panningRef = useRef(false);
+  /** True while spacebar is held — the user could pan if they press down. */
+  const isSpaceHeldRef = useRef(false);
+  /** Last pointer position during a pan, used to compute deltas. */
+  const lastPanPosRef = useRef<Point | null>(null);
+  /** Cursor state for the canvas — kept as React state so Tailwind updates. */
+  const [cursorMode, setCursorMode] = useState<"draw" | "grab" | "grabbing">(
+    "draw",
+  );
+
   const strokes = useStore((s) => s.strokes);
+  const view = useStore((s) => s.view);
   const addStroke = useStore((s) => s.addStroke);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
   const clearAll = useStore((s) => s.clearAll);
+  const panBy = useStore((s) => s.panBy);
+  const zoomAt = useStore((s) => s.zoomAt);
 
   const [confirmingClear, setConfirmingClear] = useState(false);
 
@@ -34,14 +53,14 @@ export default function App() {
 
     const handleResize = () => {
       ctxRef.current = setupCanvas(canvas);
-      if (ctxRef.current)
-        renderScene(ctxRef.current, useStore.getState().strokes);
+      if (ctxRef.current) {
+        const { strokes: s, view: v } = useStore.getState();
+        renderScene(ctxRef.current, s, v);
+      }
     };
     handleResize();
 
     window.addEventListener("resize", handleResize);
-    // On mobile Safari, the URL bar showing/hiding fires `resize` —
-    // useful for us, the same handler does the right thing.
     window.addEventListener("orientationchange", handleResize);
     return () => {
       window.removeEventListener("resize", handleResize);
@@ -49,9 +68,76 @@ export default function App() {
     };
   }, []);
 
+  // Re-render whenever strokes OR view change.
   useEffect(() => {
-    if (ctxRef.current) renderScene(ctxRef.current, strokes);
-  }, [strokes]);
+    if (ctxRef.current) renderScene(ctxRef.current, strokes, view);
+  }, [strokes, view]);
+
+  /* ───────── pan & zoom: wheel and contextmenu ───────── */
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    // Cmd/Ctrl + scroll → zoom toward cursor.
+    // We use a native non-passive listener so we can preventDefault
+    // (React's onWheel is passive by default and can't block page scroll).
+    const onWheel = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      // Smooth, exponential zoom — natural feel across trackpads and mice.
+      // deltaY > 0 means scroll down → zoom out.
+      const factor = Math.exp(-e.deltaY * 0.0015);
+      zoomAt(factor, x, y);
+    };
+
+    // Block the browser context menu so right-click can pan.
+    const onContextMenu = (e: MouseEvent) => e.preventDefault();
+
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+    canvas.addEventListener("contextmenu", onContextMenu);
+    return () => {
+      canvas.removeEventListener("wheel", onWheel);
+      canvas.removeEventListener("contextmenu", onContextMenu);
+    };
+  }, [zoomAt]);
+
+  /* ───────── pan & zoom: spacebar tracking ───────── */
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      // Don't trigger spacebar pan if user is typing in an input.
+      if (e.code === "Space" && !isTyping(e.target)) {
+        e.preventDefault();
+        if (!isSpaceHeldRef.current) {
+          isSpaceHeldRef.current = true;
+          if (!panningRef.current) setCursorMode("grab");
+        }
+      }
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === "Space") {
+        isSpaceHeldRef.current = false;
+        if (!panningRef.current) setCursorMode("draw");
+      }
+    };
+    // If the window loses focus while space is held, release it.
+    const onBlur = () => {
+      isSpaceHeldRef.current = false;
+      if (!panningRef.current) setCursorMode("draw");
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, []);
 
   /* ───────── pointer events ───────── */
 
@@ -63,46 +149,74 @@ export default function App() {
     };
   };
 
+  /** Should this pointer-down begin a pan instead of a draw? */
+  const shouldPan = (e: React.PointerEvent<HTMLCanvasElement>): boolean => {
+    return (
+      isSpaceHeldRef.current ||
+      e.button === BUTTON_MIDDLE ||
+      e.button === BUTTON_RIGHT
+    );
+  };
+
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId);
-    const { color, size, tool } = useStore.getState();
-    const point = pointerPos(e);
+    const screenPoint = pointerPos(e);
+
+    if (shouldPan(e)) {
+      panningRef.current = true;
+      lastPanPosRef.current = screenPoint;
+      setCursorMode("grabbing");
+      return;
+    }
+
+    // Only left button starts a draw.
+    if (e.button !== BUTTON_LEFT) return;
+
+    const { color, size, tool, view: v } = useStore.getState();
+    const worldPoint: Point = {
+      x: (screenPoint.x - v.panX) / v.zoom,
+      y: (screenPoint.y - v.panY) / v.zoom,
+    };
     drawingStrokeRef.current = {
       id: uid(),
       userId: "local",
       tool,
       color,
       size,
-      points: [point],
+      points: [worldPoint],
       createdAt: Date.now(),
     };
-    if (ctxRef.current) drawStroke(ctxRef.current, drawingStrokeRef.current);
+    if (ctxRef.current) {
+      renderScene(
+        ctxRef.current,
+        [...useStore.getState().strokes, drawingStrokeRef.current],
+        v,
+      );
+    }
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const screenPoint = pointerPos(e);
+
+    // Panning has priority — if we're in a pan, ignore stroke logic.
+    if (panningRef.current && lastPanPosRef.current) {
+      const dx = screenPoint.x - lastPanPosRef.current.x;
+      const dy = screenPoint.y - lastPanPosRef.current.y;
+      lastPanPosRef.current = screenPoint;
+      panBy(dx, dy);
+      return;
+    }
+
     const stroke = drawingStrokeRef.current;
     if (!stroke || !ctxRef.current) return;
 
-    const point = pointerPos(e);
-    stroke.points.push(point);
-
-    if (stroke.points.length >= 2) {
-      const a = stroke.points[stroke.points.length - 2];
-      const b = stroke.points[stroke.points.length - 1];
-      const ctx = ctxRef.current;
-      ctx.save();
-      ctx.strokeStyle = stroke.color;
-      ctx.lineWidth = stroke.size;
-      ctx.lineCap = "round";
-      ctx.lineJoin = "round";
-      ctx.globalCompositeOperation =
-        stroke.tool === "eraser" ? "destination-out" : "source-over";
-      ctx.beginPath();
-      ctx.moveTo(a.x, a.y);
-      ctx.lineTo(b.x, b.y);
-      ctx.stroke();
-      ctx.restore();
-    }
+    const v = useStore.getState().view;
+    const worldPoint: Point = {
+      x: (screenPoint.x - v.panX) / v.zoom,
+      y: (screenPoint.y - v.panY) / v.zoom,
+    };
+    stroke.points.push(worldPoint);
+    renderScene(ctxRef.current, [...useStore.getState().strokes, stroke], v);
   };
 
   const handlePointerUp = useCallback(
@@ -112,6 +226,16 @@ export default function App() {
       } catch {
         /* may already be released */
       }
+
+      // End of pan?
+      if (panningRef.current) {
+        panningRef.current = false;
+        lastPanPosRef.current = null;
+        setCursorMode(isSpaceHeldRef.current ? "grab" : "draw");
+        return;
+      }
+
+      // End of stroke.
       const stroke = drawingStrokeRef.current;
       drawingStrokeRef.current = null;
       if (!stroke) return;
@@ -129,7 +253,7 @@ export default function App() {
     exportCanvasAsPNG(canvas, `inkly-${stamp}.png`);
   }, []);
 
-  /* ───────── keyboard shortcuts ───────── */
+  /* ───────── keyboard shortcuts (existing) ───────── */
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -142,9 +266,9 @@ export default function App() {
         e.preventDefault();
         if (e.shiftKey) redo();
         else undo();
-      } else if (e.key.toLowerCase() === "e" && !meta) {
+      } else if (e.key.toLowerCase() === "e" && !meta && !isTyping(e.target)) {
         useStore.getState().setTool("eraser");
-      } else if (e.key.toLowerCase() === "p" && !meta) {
+      } else if (e.key.toLowerCase() === "p" && !meta && !isTyping(e.target)) {
         useStore.getState().setTool("pen");
       }
     };
@@ -153,6 +277,13 @@ export default function App() {
   }, [redo, undo]);
 
   /* ───────── render ───────── */
+
+  const cursorClass =
+    cursorMode === "grabbing"
+      ? "cursor-grabbing"
+      : cursorMode === "grab"
+        ? "cursor-grab"
+        : "cursor-crosshair";
 
   return (
     <div className="grid h-dvh grid-rows-[auto_1fr] overflow-hidden bg-white">
@@ -175,17 +306,15 @@ export default function App() {
           }}
         />
 
-        {/* drawing surface */}
         <canvas
           ref={canvasRef}
-          className="absolute inset-0 block h-full w-full cursor-crosshair touch-none"
+          className={`absolute inset-0 block h-full w-full touch-none ${cursorClass}`}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerUp}
         />
 
-        {/* empty state */}
         {strokes.length === 0 && (
           <div className="pointer-events-none absolute inset-0 grid animate-fade-in place-items-center">
             <div className="flex flex-col items-center gap-3 text-center">
@@ -216,14 +345,13 @@ export default function App() {
                   Start drawing
                 </p>
                 <p className="mt-0.5 font-mono text-[11px] text-neutral-400">
-                  Click and drag anywhere on the canvas
+                  Click and drag — hold space to pan, ⌘/Ctrl + scroll to zoom
                 </p>
               </div>
             </div>
           </div>
         )}
 
-        {/* floating toolbar */}
         <div className="safe-bottom pointer-events-none absolute inset-x-0 bottom-0 flex justify-center px-3 pb-6">
           <Toolbar
             onUndo={undo}
@@ -232,11 +360,10 @@ export default function App() {
             onExport={handleExport}
           />
         </div>
+        <ZoomControls canvasRef={canvasRef} />
 
-        {/* shortcuts trigger + popover */}
         <Shortcuts />
 
-        {/* clear confirmation dialog */}
         {confirmingClear && (
           <div
             className="absolute inset-0 z-50 grid animate-fade-in place-items-center bg-neutral-900/30 px-4 backdrop-blur-sm"
@@ -302,4 +429,11 @@ export default function App() {
       </main>
     </div>
   );
+}
+
+/** Don't trigger keyboard shortcuts while the user is typing in an input. */
+function isTyping(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable;
 }
