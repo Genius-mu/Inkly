@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 
-/** A single keyboard shortcut entry. */
 interface Shortcut {
   keys: string[];
   label: string;
@@ -9,6 +8,8 @@ interface Shortcut {
 const SHORTCUTS: Shortcut[] = [
   { keys: ["P"], label: "Pen" },
   { keys: ["E"], label: "Eraser" },
+  { keys: ["Space", "drag"], label: "Pan" },
+  { keys: ["⌘", "scroll"], label: "Zoom" },
   { keys: ["⌘", "Z"], label: "Undo" },
   { keys: ["⇧", "⌘", "Z"], label: "Redo" },
   { keys: ["Esc"], label: "Close dialog" },
@@ -18,7 +19,6 @@ const SHORTCUTS: Shortcut[] = [
 export function Shortcuts() {
   const [open, setOpen] = useState(false);
 
-  // Toggle on `?` (Shift+/), close on Escape.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "?" && !isTyping(e.target)) {
@@ -34,14 +34,15 @@ export function Shortcuts() {
 
   return (
     <>
-      {/* trigger — sits in the bottom-right corner of the canvas */}
       <button
         type="button"
         onClick={() => setOpen(true)}
         title="Keyboard shortcuts (?)"
         aria-label="Keyboard shortcuts"
         className="
-          pointer-events-auto absolute right-6 bottom-6
+          pointer-events-auto absolute
+          bottom-[88px] right-3
+          sm:bottom-6 sm:right-6
           grid h-9 w-9 place-items-center
           rounded-full border border-neutral-200 bg-white
           font-mono text-sm font-medium text-neutral-500
@@ -52,18 +53,17 @@ export function Shortcuts() {
         ?
       </button>
 
-      {/* popover */}
       {open && (
         <div
           className="absolute inset-0 z-40 animate-fade-in"
           onClick={() => setOpen(false)}
         >
-          {/* backdrop is invisible but clickable; popover anchors to the corner */}
           <div
             className="
-              absolute right-6 bottom-20 w-72
-              rounded-2xl border border-neutral-200 bg-white p-2
+              absolute w-72 rounded-2xl border border-neutral-200 bg-white p-2
               shadow-[0_1px_2px_rgba(0,0,0,0.04),0_24px_60px_-20px_rgba(0,0,0,0.25)]
+              bottom-[140px] right-3
+              sm:bottom-20 sm:right-6
             "
             onClick={(e) => e.stopPropagation()}
             role="dialog"
@@ -112,7 +112,6 @@ export function Shortcuts() {
   );
 }
 
-/** Single key cap. */
 function Key({ children }: { children: React.ReactNode }) {
   return (
     <kbd
@@ -128,7 +127,6 @@ function Key({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** Don't trigger shortcuts while the user is typing in an input. */
 function isTyping(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   const tag = target.tagName;

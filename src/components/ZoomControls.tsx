@@ -5,7 +5,6 @@ const ZOOM_STEP = 1.25;
 const PRESETS = [0.25, 0.5, 1, 2, 4];
 
 interface Props {
-  /** A ref to the canvas — used to compute its center for button-driven zooms. */
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
 }
 
@@ -17,7 +16,6 @@ export function ZoomControls({ canvasRef }: Props) {
   const [presetsOpen, setPresetsOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  // Click outside closes the preset dropdown.
   useEffect(() => {
     if (!presetsOpen) return;
     const onDocClick = (e: MouseEvent) => {
@@ -29,7 +27,6 @@ export function ZoomControls({ canvasRef }: Props) {
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [presetsOpen]);
 
-  /** Zoom toward the center of the canvas — used for button-driven zoom. */
   const zoomFromCenter = (factor: number) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -37,7 +34,6 @@ export function ZoomControls({ canvasRef }: Props) {
     zoomAt(factor, rect.width / 2, rect.height / 2);
   };
 
-  /** Jump to an absolute zoom (from the preset menu), centered on canvas. */
   const setAbsoluteZoom = (target: number) => {
     const factor = target / view.zoom;
     zoomFromCenter(factor);
@@ -48,8 +44,13 @@ export function ZoomControls({ canvasRef }: Props) {
   const isModified = view.zoom !== 1 || view.panX !== 0 || view.panY !== 0;
 
   return (
-    <div className="pointer-events-auto absolute bottom-6 left-6 flex items-center gap-1.5">
-      {/* main pill: − / % / + */}
+    <div
+      className="
+        pointer-events-auto absolute flex items-center gap-1.5
+        bottom-[88px] left-3
+        sm:bottom-6 sm:left-6
+      "
+    >
       <div
         ref={menuRef}
         className="
@@ -71,8 +72,9 @@ export function ZoomControls({ canvasRef }: Props) {
           aria-label="Zoom presets"
           aria-expanded={presetsOpen}
           className="
-            min-w-[64px] px-1 py-2 text-center font-mono text-[12px] font-medium
+            min-w-[56px] px-1 py-2 text-center font-mono text-[12px] font-medium
             tabular-nums text-neutral-700 transition-colors hover:text-neutral-900
+            sm:min-w-[64px]
           "
         >
           {percent}%
@@ -86,7 +88,6 @@ export function ZoomControls({ canvasRef }: Props) {
           <PlusIcon />
         </ZoomButton>
 
-        {/* preset dropdown */}
         {presetsOpen && (
           <div
             className="
@@ -116,7 +117,6 @@ export function ZoomControls({ canvasRef }: Props) {
         )}
       </div>
 
-      {/* reset button — only visible when view is modified */}
       {isModified && (
         <button
           type="button"
@@ -136,8 +136,6 @@ export function ZoomControls({ canvasRef }: Props) {
     </div>
   );
 }
-
-/* ─── primitives ─── */
 
 function ZoomButton({
   onClick,
@@ -166,8 +164,6 @@ function ZoomButton({
     </button>
   );
 }
-
-/* ─── icons ─── */
 
 function MinusIcon() {
   return (
@@ -198,7 +194,6 @@ function PlusIcon() {
 function ResetIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" className="h-[18px] w-[18px]">
-      {/* a circular arrow — universal "reset" symbol */}
       <path
         d="M3 12a9 9 0 109-9"
         stroke="currentColor"
