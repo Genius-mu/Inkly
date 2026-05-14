@@ -1,12 +1,11 @@
 import { useStore } from "../lib/store";
 
 export function Header() {
-  const strokes = useStore((s) => s.strokes);
+  const drawables = useStore((s) => s.drawables);
   const tool = useStore((s) => s.tool);
 
   return (
     <header className="safe-x flex items-center justify-between border-b border-neutral-200 bg-white/80 px-4 py-3 backdrop-blur-md sm:px-6 sm:py-3.5">
-      {/* ─── wordmark ─── */}
       <div className="flex items-center gap-2 sm:gap-2.5">
         <Mark />
         <h1 className="text-base font-semibold tracking-tight text-neutral-900 sm:text-[19px]">
@@ -17,15 +16,14 @@ export function Header() {
         </span>
       </div>
 
-      {/* ─── status pills ─── */}
       <div className="flex items-center gap-1.5 sm:gap-2">
         <Pill>
           <span className="h-1.5 w-1.5 rounded-full bg-signal" />
           <span className="font-medium tabular-nums text-neutral-900">
-            {strokes.length}
+            {drawables.length}
           </span>
           <span className="hidden text-neutral-500 sm:inline">
-            {strokes.length === 1 ? "stroke" : "strokes"}
+            {drawables.length === 1 ? "item" : "items"}
           </span>
         </Pill>
 

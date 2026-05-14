@@ -8,6 +8,10 @@ interface Shortcut {
 const SHORTCUTS: Shortcut[] = [
   { keys: ["P"], label: "Pen" },
   { keys: ["E"], label: "Eraser" },
+  { keys: ["R"], label: "Rectangle" },
+  { keys: ["O"], label: "Ellipse" },
+  { keys: ["L"], label: "Line" },
+  { keys: ["A"], label: "Arrow" },
   { keys: ["Space", "drag"], label: "Pan" },
   { keys: ["⌘", "scroll"], label: "Zoom" },
   { keys: ["⌘", "Z"], label: "Undo" },
@@ -64,6 +68,7 @@ export function Shortcuts() {
               shadow-[0_1px_2px_rgba(0,0,0,0.04),0_24px_60px_-20px_rgba(0,0,0,0.25)]
               bottom-[140px] right-3
               sm:bottom-20 sm:right-6
+              max-h-[60vh] overflow-y-auto
             "
             onClick={(e) => e.stopPropagation()}
             role="dialog"
@@ -114,14 +119,7 @@ export function Shortcuts() {
 
 function Key({ children }: { children: React.ReactNode }) {
   return (
-    <kbd
-      className="
-        inline-grid min-w-[22px] place-items-center
-        rounded-md border border-neutral-200 bg-neutral-50
-        px-1.5 py-0.5
-        font-mono text-[10px] font-medium text-neutral-700
-      "
-    >
+    <kbd className="inline-grid min-w-[22px] place-items-center rounded-md border border-neutral-200 bg-neutral-50 px-1.5 py-0.5 font-mono text-[10px] font-medium text-neutral-700">
       {children}
     </kbd>
   );

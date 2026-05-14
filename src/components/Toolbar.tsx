@@ -1,5 +1,6 @@
 import clsx from "clsx";
-import { useStore } from "../lib/store";
+import { useEffect, useRef, useState } from "react";
+import { useStore, type Tool } from "../lib/store";
 
 const PALETTE = [
   "#0a0a0a", // ink
@@ -11,6 +12,17 @@ const PALETTE = [
 ];
 
 const SIZES = [2, 4, 8, 16];
+
+const SHAPE_TOOLS: Array<{
+  tool: Tool;
+  label: string;
+  icon: () => React.ReactElement;
+}> = [
+  { tool: "rect", label: "Rectangle", icon: () => <RectIcon /> },
+  { tool: "ellipse", label: "Ellipse", icon: () => <EllipseIcon /> },
+  { tool: "line", label: "Line", icon: () => <LineIcon /> },
+  { tool: "arrow", label: "Arrow", icon: () => <ArrowIcon /> },
+];
 
 interface ToolbarProps {
   onUndo: () => void;
@@ -26,119 +38,253 @@ export function Toolbar({ onUndo, onRedo, onClear, onExport }: ToolbarProps) {
   const setSize = useStore((s) => s.setSize);
   const tool = useStore((s) => s.tool);
   const setTool = useStore((s) => s.setTool);
-  const strokes = useStore((s) => s.strokes);
+  const drawables = useStore((s) => s.drawables);
   const redoStack = useStore((s) => s.redoStack);
 
-  const canUndo = strokes.length > 0;
+  const canUndo = drawables.length > 0;
   const canRedo = redoStack.length > 0;
 
+  const [shapeMenuOpen, setShapeMenuOpen] = useState(false);
+  const shapeButtonRef = useRef<HTMLButtonElement>(null);
+  const shapePopoverRef = useRef<HTMLDivElement>(null);
+  const [shapeAnchor, setShapeAnchor] = useState<{
+    left: number;
+    top: number;
+  } | null>(null);
+
+  // Compute popover position whenever it opens (or window resizes while open).
+  useEffect(() => {
+    if (!shapeMenuOpen) return;
+
+    const placePopover = () => {
+      const btn = shapeButtonRef.current;
+      const pop = shapePopoverRef.current;
+      if (!btn || !pop) return;
+      const buttonRect = btn.getBoundingClientRect();
+      const popRect = pop.getBoundingClientRect();
+      // Place the popover centered above the button, 8px gap.
+      const left = buttonRect.left + buttonRect.width / 2 - popRect.width / 2;
+      const top = buttonRect.top - popRect.height - 8;
+      setShapeAnchor({
+        // Clamp so the popover never goes off-screen horizontally.
+        left: Math.max(
+          8,
+          Math.min(left, window.innerWidth - popRect.width - 8),
+        ),
+        top: Math.max(8, top),
+      });
+    };
+
+    // Position once, then again after layout settles (popover dimensions
+    // come from its content, so we need the rect after it renders).
+    placePopover();
+    const raf = requestAnimationFrame(placePopover);
+
+    window.addEventListener("resize", placePopover);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", placePopover);
+    };
+  }, [shapeMenuOpen]);
+
+  // Click outside closes the popover.
+  useEffect(() => {
+    if (!shapeMenuOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (
+        shapeButtonRef.current?.contains(t) ||
+        shapePopoverRef.current?.contains(t)
+      ) {
+        return;
+      }
+      setShapeMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [shapeMenuOpen]);
+
+  const isShapeTool =
+    tool === "rect" ||
+    tool === "ellipse" ||
+    tool === "line" ||
+    tool === "arrow";
+
+  const activeShape =
+    SHAPE_TOOLS.find((s) => s.tool === tool) ?? SHAPE_TOOLS[0];
+
   return (
-    <div
-      role="toolbar"
-      aria-label="Drawing tools"
-      className="
-        no-scrollbar pointer-events-auto flex max-w-[calc(100vw-1.5rem)] items-center gap-1
-        overflow-x-auto rounded-2xl border border-neutral-200 bg-white p-1.5
-        shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_-8px_rgba(0,0,0,0.12)]
-      "
-    >
-      {/* ─── pen / eraser segmented toggle ─── */}
-      <div className="flex shrink-0 rounded-xl bg-neutral-100 p-0.5">
-        <SegmentButton
-          active={tool === "pen"}
-          onClick={() => setTool("pen")}
-          label="Pen (P)"
-        >
-          <PenIcon />
-        </SegmentButton>
-        <SegmentButton
-          active={tool === "eraser"}
-          onClick={() => setTool("eraser")}
-          label="Eraser (E)"
-        >
-          <EraserIcon />
-        </SegmentButton>
-      </div>
-
-      <Divider />
-
-      {/* ─── color palette ─── */}
-      <div className="flex shrink-0 items-center gap-1 px-1">
-        {PALETTE.map((c) => (
-          <button
-            key={c}
-            type="button"
-            onClick={() => setColor(c)}
-            aria-label={`Color ${c}`}
-            aria-pressed={color === c && tool === "pen"}
-            className={clsx(
-              "group relative h-7 w-7 shrink-0 rounded-lg transition-transform",
-              "hover:-translate-y-0.5 active:translate-y-0",
-              color === c &&
-                tool === "pen" &&
-                "ring-2 ring-offset-2 ring-neutral-900",
-            )}
+    <>
+      <div
+        role="toolbar"
+        aria-label="Drawing tools"
+        className="
+          no-scrollbar pointer-events-auto flex max-w-[calc(100vw-1.5rem)] items-center gap-1
+          overflow-x-auto rounded-2xl border border-neutral-200 bg-white p-1.5
+          shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_-8px_rgba(0,0,0,0.12)]
+        "
+      >
+        {/* ─── pen / eraser segmented toggle ─── */}
+        <div className="flex shrink-0 rounded-xl bg-neutral-100 p-0.5">
+          <SegmentButton
+            active={tool === "pen"}
+            onClick={() => setTool("pen")}
+            label="Pen (P)"
           >
-            <span
-              className="absolute inset-1 rounded-md"
-              style={{ backgroundColor: c }}
-            />
-          </button>
-        ))}
-      </div>
-
-      <Divider />
-
-      {/* ─── brush sizes ─── */}
-      <div className="flex shrink-0 items-center gap-0.5 px-1">
-        {SIZES.map((s) => (
-          <button
-            key={s}
-            type="button"
-            onClick={() => setSize(s)}
-            aria-label={`Size ${s}`}
-            aria-pressed={size === s}
-            className={clsx(
-              "grid h-9 w-9 shrink-0 place-items-center rounded-lg transition-colors",
-              size === s ? "bg-neutral-900" : "hover:bg-neutral-100",
-            )}
+            <PenIcon />
+          </SegmentButton>
+          <SegmentButton
+            active={tool === "eraser"}
+            onClick={() => setTool("eraser")}
+            label="Eraser (E)"
           >
-            <span
+            <EraserIcon />
+          </SegmentButton>
+        </div>
+
+        <Divider />
+
+        {/* ─── shape button ─── */}
+        <button
+          ref={shapeButtonRef}
+          type="button"
+          onClick={() => setShapeMenuOpen((v) => !v)}
+          aria-label="Shape tools"
+          aria-pressed={isShapeTool}
+          aria-expanded={shapeMenuOpen}
+          className={clsx(
+            "grid h-9 w-9 shrink-0 place-items-center rounded-lg transition-colors",
+            isShapeTool
+              ? "bg-neutral-900 text-white"
+              : "text-neutral-700 hover:bg-neutral-100",
+          )}
+          title="Shapes"
+        >
+          {activeShape.icon()}
+        </button>
+
+        <Divider />
+
+        {/* ─── color palette ─── */}
+        <div className="flex shrink-0 items-center gap-1 px-1">
+          {PALETTE.map((c) => (
+            <button
+              key={c}
+              type="button"
+              onClick={() => setColor(c)}
+              aria-label={`Color ${c}`}
+              aria-pressed={color === c}
               className={clsx(
-                "block rounded-full transition-colors",
-                size === s ? "bg-white" : "bg-neutral-900",
+                "group relative h-7 w-7 shrink-0 rounded-lg transition-transform",
+                "hover:-translate-y-0.5 active:translate-y-0",
+                color === c && "ring-2 ring-offset-2 ring-neutral-900",
               )}
-              style={{
-                width: Math.min(s + 2, 18),
-                height: Math.min(s + 2, 18),
+            >
+              <span
+                className="absolute inset-1 rounded-md"
+                style={{ backgroundColor: c }}
+              />
+            </button>
+          ))}
+        </div>
+
+        <Divider />
+
+        {/* ─── sizes ─── */}
+        <div className="flex shrink-0 items-center gap-0.5 px-1">
+          {SIZES.map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => setSize(s)}
+              aria-label={`Size ${s}`}
+              aria-pressed={size === s}
+              className={clsx(
+                "grid h-9 w-9 shrink-0 place-items-center rounded-lg transition-colors",
+                size === s ? "bg-neutral-900" : "hover:bg-neutral-100",
+              )}
+            >
+              <span
+                className={clsx(
+                  "block rounded-full transition-colors",
+                  size === s ? "bg-white" : "bg-neutral-900",
+                )}
+                style={{
+                  width: Math.min(s + 2, 18),
+                  height: Math.min(s + 2, 18),
+                }}
+              />
+            </button>
+          ))}
+        </div>
+
+        <Divider />
+
+        {/* ─── actions ─── */}
+        <div className="flex shrink-0 items-center gap-0.5">
+          <IconButton onClick={onUndo} disabled={!canUndo} label="Undo (⌘Z)">
+            <UndoIcon />
+          </IconButton>
+          <IconButton onClick={onRedo} disabled={!canRedo} label="Redo (⇧⌘Z)">
+            <RedoIcon />
+          </IconButton>
+          <IconButton
+            onClick={onExport}
+            disabled={!canUndo}
+            label="Save as PNG"
+          >
+            <DownloadIcon />
+          </IconButton>
+          <IconButton onClick={onClear} label="Clear" tone="danger">
+            <TrashIcon />
+          </IconButton>
+        </div>
+      </div>
+
+      {/* ─── shape popover: lives OUTSIDE the toolbar so overflow can't clip it ─── */}
+      {shapeMenuOpen && (
+        <div
+          ref={shapePopoverRef}
+          className="
+            fixed z-50 flex animate-fade-in items-center gap-0.5
+            rounded-xl border border-neutral-200 bg-white p-1
+            shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_-8px_rgba(0,0,0,0.12)]
+          "
+          style={{
+            left: shapeAnchor?.left ?? -9999,
+            top: shapeAnchor?.top ?? -9999,
+            // Hide until positioned to avoid a one-frame flash in the corner.
+            visibility: shapeAnchor ? "visible" : "hidden",
+          }}
+        >
+          {SHAPE_TOOLS.map(({ tool: t, label, icon: Icon }) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => {
+                setTool(t);
+                setShapeMenuOpen(false);
               }}
-            />
-          </button>
-        ))}
-      </div>
-
-      <Divider />
-
-      {/* ─── actions ─── */}
-      <div className="flex shrink-0 items-center gap-0.5">
-        <IconButton onClick={onUndo} disabled={!canUndo} label="Undo (⌘Z)">
-          <UndoIcon />
-        </IconButton>
-        <IconButton onClick={onRedo} disabled={!canRedo} label="Redo (⇧⌘Z)">
-          <RedoIcon />
-        </IconButton>
-        <IconButton onClick={onExport} disabled={!canUndo} label="Save as PNG">
-          <DownloadIcon />
-        </IconButton>
-        <IconButton onClick={onClear} label="Clear" tone="danger">
-          <TrashIcon />
-        </IconButton>
-      </div>
-    </div>
+              aria-label={label}
+              title={label}
+              aria-pressed={tool === t}
+              className={clsx(
+                "grid h-9 w-9 place-items-center rounded-lg transition-colors",
+                tool === t
+                  ? "bg-neutral-900 text-white"
+                  : "text-neutral-700 hover:bg-neutral-100",
+              )}
+            >
+              <Icon />
+            </button>
+          ))}
+        </div>
+      )}
+    </>
   );
 }
 
-/* ─── small primitives ────────────────────────────────────────── */
+/* ─── primitives ─── */
 
 function Divider() {
   return (
@@ -209,7 +355,7 @@ function IconButton({
   );
 }
 
-/* ─── icons ───────────────────────────────────────────────────── */
+/* ─── icons ─── */
 
 const iconBase = "h-[18px] w-[18px]";
 
@@ -249,6 +395,64 @@ function EraserIcon() {
         stroke="currentColor"
         strokeWidth="1.6"
         strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function RectIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={iconBase}>
+      <rect
+        x="4"
+        y="6"
+        width="16"
+        height="12"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        rx="1.5"
+      />
+    </svg>
+  );
+}
+
+function EllipseIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={iconBase}>
+      <ellipse
+        cx="12"
+        cy="12"
+        rx="8"
+        ry="6"
+        stroke="currentColor"
+        strokeWidth="1.6"
+      />
+    </svg>
+  );
+}
+
+function LineIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={iconBase}>
+      <path
+        d="M5 19L19 5"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function ArrowIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={iconBase}>
+      <path
+        d="M5 19L19 5M19 5h-7M19 5v7"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       />
     </svg>
   );

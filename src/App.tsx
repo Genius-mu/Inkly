@@ -3,16 +3,30 @@ import { Header } from "./components/Header";
 import { Toolbar } from "./components/Toolbar";
 import { Shortcuts } from "./components/Shortcuts";
 import { ZoomControls } from "./components/ZoomControls";
-import { useStore } from "./lib/store";
+import { useStore, type Tool } from "./lib/store";
 import { exportCanvasAsPNG, renderScene, setupCanvas } from "./lib/drawing";
 import { uid } from "./lib/utils";
-import type { Point, Stroke } from "./types";
+import type { Drawable, Point, Shape, Stroke } from "./types";
 
 const BUTTON_LEFT = 0;
 const BUTTON_MIDDLE = 1;
 const BUTTON_RIGHT = 2;
 
-/** Compute midpoint and distance between two points. */
+const SHAPE_VARIANTS: Record<string, Shape["variant"] | null> = {
+  rect: "rect",
+  ellipse: "ellipse",
+  line: "line",
+  arrow: "arrow",
+};
+
+function isShapeTool(
+  tool: Tool,
+): tool is "rect" | "ellipse" | "line" | "arrow" {
+  return (
+    tool === "rect" || tool === "ellipse" || tool === "line" || tool === "arrow"
+  );
+}
+
 function pinchMetrics(a: Point, b: Point) {
   const midX = (a.x + b.x) / 2;
   const midY = (a.y + b.y) / 2;
@@ -25,9 +39,13 @@ function pinchMetrics(a: Point, b: Point) {
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
-  const drawingStrokeRef = useRef<Stroke | null>(null);
 
-  /** True while the user is actively panning with mouse (pointer captured). */
+  /**
+   * The drawable currently being authored — could be a stroke or a
+   * shape depending on the active tool. Null when not drawing.
+   */
+  const inProgressRef = useRef<Drawable | null>(null);
+
   const panningRef = useRef(false);
   const isSpaceHeldRef = useRef(false);
   const lastPanPosRef = useRef<Point | null>(null);
@@ -35,21 +53,16 @@ export default function App() {
     "draw",
   );
 
-  /**
-   * Map of active touch pointers (by pointerId → current canvas-relative pos).
-   * Used to detect single-finger draw vs. multi-finger pan/pinch.
-   */
   const touchesRef = useRef(new Map<number, Point>());
-  /** State of the in-progress pinch gesture (two fingers down). */
   const pinchStateRef = useRef<{
     midX: number;
     midY: number;
     distance: number;
   } | null>(null);
 
-  const strokes = useStore((s) => s.strokes);
+  const drawables = useStore((s) => s.drawables);
   const view = useStore((s) => s.view);
-  const addStroke = useStore((s) => s.addStroke);
+  const addDrawable = useStore((s) => s.addDrawable);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
   const clearAll = useStore((s) => s.clearAll);
@@ -67,8 +80,8 @@ export default function App() {
     const handleResize = () => {
       ctxRef.current = setupCanvas(canvas);
       if (ctxRef.current) {
-        const { strokes: s, view: v } = useStore.getState();
-        renderScene(ctxRef.current, s, v);
+        const { drawables: d, view: v } = useStore.getState();
+        renderScene(ctxRef.current, d, v);
       }
     };
     handleResize();
@@ -82,8 +95,8 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (ctxRef.current) renderScene(ctxRef.current, strokes, view);
-  }, [strokes, view]);
+    if (ctxRef.current) renderScene(ctxRef.current, drawables, view);
+  }, [drawables, view]);
 
   /* ───────── wheel + contextmenu (desktop) ───────── */
 
@@ -161,12 +174,70 @@ export default function App() {
     );
   };
 
-  /** Abandon any in-progress stroke. Used when a second finger lands. */
-  const abandonStroke = () => {
-    drawingStrokeRef.current = null;
+  const abandonInProgress = () => {
+    inProgressRef.current = null;
     if (ctxRef.current) {
-      const { strokes: s, view: v } = useStore.getState();
-      renderScene(ctxRef.current, s, v);
+      const { drawables: d, view: v } = useStore.getState();
+      renderScene(ctxRef.current, d, v);
+    }
+  };
+
+  /** Convert a screen-space point to world space, using the current view. */
+  const screenToWorld = (p: Point): Point => {
+    const v = useStore.getState().view;
+    return {
+      x: (p.x - v.panX) / v.zoom,
+      y: (p.y - v.panY) / v.zoom,
+    };
+  };
+
+  /** Build a new drawable based on the active tool. */
+  const beginDrawable = (worldStart: Point): Drawable | null => {
+    const { color, size, tool } = useStore.getState();
+
+    if (tool === "pen" || tool === "eraser") {
+      const s: Stroke = {
+        id: uid(),
+        kind: "stroke",
+        userId: "local",
+        tool,
+        color,
+        size,
+        points: [worldStart],
+        createdAt: Date.now(),
+      };
+      return s;
+    }
+
+    if (isShapeTool(tool)) {
+      const variant = SHAPE_VARIANTS[tool]!;
+      const s: Shape = {
+        id: uid(),
+        kind: "shape",
+        userId: "local",
+        variant,
+        start: worldStart,
+        end: worldStart,
+        color,
+        size,
+        createdAt: Date.now(),
+      };
+      return s;
+    }
+
+    // Text and sticky tools route through a different code path (next step).
+    return null;
+  };
+
+  /** Update the in-progress drawable as the pointer moves to a new world point. */
+  const updateInProgress = (worldPoint: Point) => {
+    const d = inProgressRef.current;
+    if (!d) return;
+
+    if (d.kind === "stroke") {
+      d.points.push(worldPoint);
+    } else if (d.kind === "shape") {
+      d.end = worldPoint;
     }
   };
 
@@ -174,21 +245,15 @@ export default function App() {
     const screenPoint = pointerPos(e);
     e.currentTarget.setPointerCapture(e.pointerId);
 
-    // Touch handling — track every active touch in the map.
     if (e.pointerType === "touch") {
       touchesRef.current.set(e.pointerId, screenPoint);
-
-      // Second (or later) finger: cancel any draw, initialize pinch state.
       if (touchesRef.current.size >= 2) {
-        abandonStroke();
+        abandonInProgress();
         const [a, b] = Array.from(touchesRef.current.values());
         pinchStateRef.current = pinchMetrics(a, b);
         return;
       }
-
-      // First finger: fall through to draw logic below.
     } else {
-      // Mouse / pen: existing pan-vs-draw decision.
       if (shouldPan(e)) {
         panningRef.current = true;
         lastPanPosRef.current = screenPoint;
@@ -198,26 +263,16 @@ export default function App() {
       if (e.button !== BUTTON_LEFT) return;
     }
 
-    // Begin a new stroke.
-    const { color, size, tool, view: v } = useStore.getState();
-    const worldPoint: Point = {
-      x: (screenPoint.x - v.panX) / v.zoom,
-      y: (screenPoint.y - v.panY) / v.zoom,
-    };
-    drawingStrokeRef.current = {
-      id: uid(),
-      userId: "local",
-      tool,
-      color,
-      size,
-      points: [worldPoint],
-      createdAt: Date.now(),
-    };
+    const worldPoint = screenToWorld(screenPoint);
+    const drawable = beginDrawable(worldPoint);
+    if (!drawable) return;
+
+    inProgressRef.current = drawable;
     if (ctxRef.current) {
       renderScene(
         ctxRef.current,
-        [...useStore.getState().strokes, drawingStrokeRef.current],
-        v,
+        [...useStore.getState().drawables, drawable],
+        useStore.getState().view,
       );
     }
   };
@@ -225,22 +280,18 @@ export default function App() {
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const screenPoint = pointerPos(e);
 
-    // Update touch tracking BEFORE deciding what to do.
     if (e.pointerType === "touch" && touchesRef.current.has(e.pointerId)) {
       touchesRef.current.set(e.pointerId, screenPoint);
     }
 
-    // Multi-finger pinch / pan — runs every move while two fingers are down.
     if (e.pointerType === "touch" && touchesRef.current.size >= 2) {
       const [a, b] = Array.from(touchesRef.current.values());
       const next = pinchMetrics(a, b);
       const prev = pinchStateRef.current;
       if (prev) {
-        // Pan by midpoint delta.
         const dx = next.midX - prev.midX;
         const dy = next.midY - prev.midY;
         if (dx !== 0 || dy !== 0) panBy(dx, dy);
-        // Zoom by distance ratio, toward the current midpoint.
         if (prev.distance > 0 && next.distance > 0) {
           const factor = next.distance / prev.distance;
           if (factor !== 1) zoomAt(factor, next.midX, next.midY);
@@ -250,7 +301,6 @@ export default function App() {
       return;
     }
 
-    // Mouse pan — existing behavior.
     if (panningRef.current && lastPanPosRef.current) {
       const dx = screenPoint.x - lastPanPosRef.current.x;
       const dy = screenPoint.y - lastPanPosRef.current.y;
@@ -259,17 +309,16 @@ export default function App() {
       return;
     }
 
-    // Drawing (single finger / mouse left-button).
-    const stroke = drawingStrokeRef.current;
-    if (!stroke || !ctxRef.current) return;
+    const inProgress = inProgressRef.current;
+    if (!inProgress || !ctxRef.current) return;
 
-    const v = useStore.getState().view;
-    const worldPoint: Point = {
-      x: (screenPoint.x - v.panX) / v.zoom,
-      y: (screenPoint.y - v.panY) / v.zoom,
-    };
-    stroke.points.push(worldPoint);
-    renderScene(ctxRef.current, [...useStore.getState().strokes, stroke], v);
+    const worldPoint = screenToWorld(screenPoint);
+    updateInProgress(worldPoint);
+    renderScene(
+      ctxRef.current,
+      [...useStore.getState().drawables, inProgress],
+      useStore.getState().view,
+    );
   };
 
   const handlePointerUp = useCallback(
@@ -280,23 +329,17 @@ export default function App() {
         /* may already be released */
       }
 
-      // Touch released — remove from the tracking map.
       if (e.pointerType === "touch") {
         touchesRef.current.delete(e.pointerId);
-        // If we drop from 2 fingers to 1, end the pinch but don't resume drawing.
-        // The user has to lift fully and re-tap to start a new stroke.
         if (touchesRef.current.size < 2) {
           pinchStateRef.current = null;
         }
         if (touchesRef.current.size >= 1) {
-          // Still touching — discard any in-progress stroke; next stroke must
-          // come from a fresh pointerdown.
-          drawingStrokeRef.current = null;
+          inProgressRef.current = null;
           return;
         }
       }
 
-      // Mouse pan ended.
       if (panningRef.current) {
         panningRef.current = false;
         lastPanPosRef.current = null;
@@ -304,13 +347,20 @@ export default function App() {
         return;
       }
 
-      // Stroke committed.
-      const stroke = drawingStrokeRef.current;
-      drawingStrokeRef.current = null;
-      if (!stroke) return;
-      addStroke(stroke);
+      const inProgress = inProgressRef.current;
+      inProgressRef.current = null;
+      if (!inProgress) return;
+
+      // For shapes: drop degenerate (zero-size) shapes from a stray click.
+      if (inProgress.kind === "shape") {
+        const dx = inProgress.end.x - inProgress.start.x;
+        const dy = inProgress.end.y - inProgress.start.y;
+        if (Math.hypot(dx, dy) < 2) return; // less than 2 world units — ignore
+      }
+
+      addDrawable(inProgress);
     },
-    [addStroke],
+    [addDrawable],
   );
 
   /* ───────── export ───────── */
@@ -335,10 +385,14 @@ export default function App() {
         e.preventDefault();
         if (e.shiftKey) redo();
         else undo();
-      } else if (e.key.toLowerCase() === "e" && !meta && !isTyping(e.target)) {
-        useStore.getState().setTool("eraser");
-      } else if (e.key.toLowerCase() === "p" && !meta && !isTyping(e.target)) {
-        useStore.getState().setTool("pen");
+      } else if (!meta && !isTyping(e.target)) {
+        const k = e.key.toLowerCase();
+        if (k === "p") useStore.getState().setTool("pen");
+        else if (k === "e") useStore.getState().setTool("eraser");
+        else if (k === "r") useStore.getState().setTool("rect");
+        else if (k === "o") useStore.getState().setTool("ellipse");
+        else if (k === "l") useStore.getState().setTool("line");
+        else if (k === "a") useStore.getState().setTool("arrow");
       }
     };
     window.addEventListener("keydown", onKey);
@@ -383,7 +437,7 @@ export default function App() {
           onPointerCancel={handlePointerUp}
         />
 
-        {strokes.length === 0 && (
+        {drawables.length === 0 && (
           <div className="pointer-events-none absolute inset-0 grid animate-fade-in place-items-center">
             <div className="flex flex-col items-center gap-3 text-center">
               <div className="grid h-12 w-12 place-items-center rounded-2xl bg-white shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_-8px_rgba(0,0,0,0.12)]">
@@ -467,7 +521,7 @@ export default function App() {
                 Clear the canvas?
               </h3>
               <p className="mt-1 text-sm text-neutral-500">
-                All {strokes.length} stroke{strokes.length === 1 ? "" : "s"}{" "}
+                All {drawables.length} item{drawables.length === 1 ? "" : "s"}{" "}
                 will be removed. This can't be undone.
               </p>
 

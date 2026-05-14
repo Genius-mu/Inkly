@@ -1,22 +1,34 @@
 /**
  * Inkly — global state
  *
- * Single source of truth for: strokes on the canvas (world-space),
+ * Single source of truth for: drawables on the canvas (world-space),
  * the current pan/zoom view, the undo/redo stacks, and the active
  * tool/color/size selection.
  */
 
 import { create } from "zustand";
-import type { Stroke, View } from "../types";
+import type { Drawable, StickyColor, View } from "../types";
 
-const MIN_ZOOM = 0.1; // 10%
-const MAX_ZOOM = 8; // 800%
+const MIN_ZOOM = 0.1;
+const MAX_ZOOM = 8;
 const DEFAULT_VIEW: View = { panX: 0, panY: 0, zoom: 1 };
+
+/** Every tool the user can pick. */
+export type Tool =
+  | "pen"
+  | "eraser" // pixel eraser (existing)
+  | "object-eraser" // click a drawable to delete it
+  | "rect"
+  | "ellipse"
+  | "line"
+  | "arrow"
+  | "text"
+  | "sticky";
 
 interface InklyState {
   // Drawing state
-  strokes: Stroke[];
-  redoStack: Stroke[];
+  drawables: Drawable[];
+  redoStack: Drawable[];
 
   // View state
   view: View;
@@ -24,10 +36,13 @@ interface InklyState {
   // Tool state
   color: string;
   size: number;
-  tool: "pen" | "eraser";
+  tool: Tool;
+  /** Background color for the next sticky note. */
+  stickyColor: StickyColor;
 
-  // Drawing actions
-  addStroke: (stroke: Stroke) => void;
+  // Drawable actions
+  addDrawable: (d: Drawable) => void;
+  removeDrawable: (id: string) => void;
   undo: () => void;
   redo: () => void;
   clearAll: () => void;
@@ -35,18 +50,14 @@ interface InklyState {
   // View actions
   setView: (view: View) => void;
   panBy: (dx: number, dy: number) => void;
-  /**
-   * Zoom toward a fixed screen point — the point on the canvas where
-   * the mouse / pinch center is stays put while everything scales.
-   * Without this, zooming feels like the canvas is sliding under you.
-   */
   zoomAt: (factor: number, screenX: number, screenY: number) => void;
   resetView: () => void;
 
   // Tool actions
   setColor: (color: string) => void;
   setSize: (size: number) => void;
-  setTool: (tool: "pen" | "eraser") => void;
+  setTool: (tool: Tool) => void;
+  setStickyColor: (c: StickyColor) => void;
 }
 
 function clampZoom(z: number): number {
@@ -55,7 +66,7 @@ function clampZoom(z: number): number {
 
 export const useStore = create<InklyState>((set, get) => ({
   // ─── initial state ──────────────────────────────────────────
-  strokes: [],
+  drawables: [],
   redoStack: [],
 
   view: DEFAULT_VIEW,
@@ -63,20 +74,32 @@ export const useStore = create<InklyState>((set, get) => ({
   color: "#0a0a0a",
   size: 4,
   tool: "pen",
+  stickyColor: "yellow",
 
-  // ─── drawing actions ────────────────────────────────────────
-  addStroke: (stroke) =>
+  // ─── drawable actions ───────────────────────────────────────
+  addDrawable: (d) =>
     set((state) => ({
-      strokes: [...state.strokes, stroke],
+      drawables: [...state.drawables, d],
       redoStack: [],
     })),
 
+  removeDrawable: (id) =>
+    set((state) => {
+      const removed = state.drawables.find((d) => d.id === id);
+      if (!removed) return state;
+      return {
+        drawables: state.drawables.filter((d) => d.id !== id),
+        // Object-erase pushes onto redo, like undo does.
+        redoStack: [...state.redoStack, removed],
+      };
+    }),
+
   undo: () => {
-    const { strokes } = get();
-    if (strokes.length === 0) return;
-    const last = strokes[strokes.length - 1];
+    const { drawables } = get();
+    if (drawables.length === 0) return;
+    const last = drawables[drawables.length - 1];
     set((state) => ({
-      strokes: state.strokes.slice(0, -1),
+      drawables: state.drawables.slice(0, -1),
       redoStack: [...state.redoStack, last],
     }));
   },
@@ -84,14 +107,14 @@ export const useStore = create<InklyState>((set, get) => ({
   redo: () => {
     const { redoStack } = get();
     if (redoStack.length === 0) return;
-    const stroke = redoStack[redoStack.length - 1];
+    const d = redoStack[redoStack.length - 1];
     set((state) => ({
-      strokes: [...state.strokes, stroke],
+      drawables: [...state.drawables, d],
       redoStack: state.redoStack.slice(0, -1),
     }));
   },
 
-  clearAll: () => set({ strokes: [], redoStack: [] }),
+  clearAll: () => set({ drawables: [], redoStack: [] }),
 
   // ─── view actions ───────────────────────────────────────────
   setView: (view) => set({ view: { ...view, zoom: clampZoom(view.zoom) } }),
@@ -109,11 +132,6 @@ export const useStore = create<InklyState>((set, get) => ({
     set((state) => {
       const { panX, panY, zoom } = state.view;
       const nextZoom = clampZoom(zoom * factor);
-      // The world point under the cursor before zoom:
-      //   wx = (screenX - panX) / zoom
-      //   wy = (screenY - panY) / zoom
-      // After zoom, we want the same world point under the cursor:
-      //   screenX = wx * nextZoom + nextPanX  →  nextPanX = screenX - wx * nextZoom
       const wx = (screenX - panX) / zoom;
       const wy = (screenY - panY) / zoom;
       return {
@@ -128,7 +146,17 @@ export const useStore = create<InklyState>((set, get) => ({
   resetView: () => set({ view: DEFAULT_VIEW }),
 
   // ─── tool actions ───────────────────────────────────────────
-  setColor: (color) => set({ color, tool: "pen" }),
+  setColor: (color) =>
+    set((state) => ({
+      color,
+      // Stay in shape/text tools when changing color; only auto-switch
+      // from eraser/object-eraser, where color doesn't apply.
+      tool:
+        state.tool === "eraser" || state.tool === "object-eraser"
+          ? "pen"
+          : state.tool,
+    })),
   setSize: (size) => set({ size }),
   setTool: (tool) => set({ tool }),
+  setStickyColor: (stickyColor) => set({ stickyColor }),
 }));
