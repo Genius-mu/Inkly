@@ -2,8 +2,8 @@
  * Inkly — global state
  *
  * Single source of truth for: drawables on the canvas (world-space),
- * the current pan/zoom view, the undo/redo stacks, and the active
- * tool/color/size selection.
+ * the current pan/zoom view, the undo/redo stacks, the active tool
+ * selection, and the id of the drawable currently being text-edited.
  */
 
 import { create } from "zustand";
@@ -16,8 +16,8 @@ const DEFAULT_VIEW: View = { panX: 0, panY: 0, zoom: 1 };
 /** Every tool the user can pick. */
 export type Tool =
   | "pen"
-  | "eraser" // pixel eraser (existing)
-  | "object-eraser" // click a drawable to delete it
+  | "eraser"
+  | "object-eraser"
   | "rect"
   | "ellipse"
   | "line"
@@ -29,6 +29,12 @@ interface InklyState {
   // Drawing state
   drawables: Drawable[];
   redoStack: Drawable[];
+  /**
+   * The id of the drawable currently in DOM-editor mode (text/sticky).
+   * The canvas renderer skips this one while it's being edited so it
+   * doesn't double-render under the live textarea.
+   */
+  editingId: string | null;
 
   // View state
   view: View;
@@ -37,15 +43,19 @@ interface InklyState {
   color: string;
   size: number;
   tool: Tool;
-  /** Background color for the next sticky note. */
   stickyColor: StickyColor;
 
   // Drawable actions
   addDrawable: (d: Drawable) => void;
+  updateDrawable: (id: string, patch: Partial<Drawable>) => void;
   removeDrawable: (id: string) => void;
   undo: () => void;
   redo: () => void;
   clearAll: () => void;
+
+  // Editing actions
+  startEditing: (id: string) => void;
+  finishEditing: () => void;
 
   // View actions
   setView: (view: View) => void;
@@ -68,6 +78,7 @@ export const useStore = create<InklyState>((set, get) => ({
   // ─── initial state ──────────────────────────────────────────
   drawables: [],
   redoStack: [],
+  editingId: null,
 
   view: DEFAULT_VIEW,
 
@@ -83,13 +94,26 @@ export const useStore = create<InklyState>((set, get) => ({
       redoStack: [],
     })),
 
+  /**
+   * Apply a partial patch to an existing drawable. Used while text
+   * editing — we keep the drawable in the store with placeholder text
+   * and update it as the user types. (`as Drawable` cast: the
+   * discriminated union doesn't merge cleanly with Partial, but at
+   * runtime we only ever patch fields that exist on the matched kind.)
+   */
+  updateDrawable: (id, patch) =>
+    set((state) => ({
+      drawables: state.drawables.map((d) =>
+        d.id === id ? ({ ...d, ...patch } as Drawable) : d,
+      ),
+    })),
+
   removeDrawable: (id) =>
     set((state) => {
       const removed = state.drawables.find((d) => d.id === id);
       if (!removed) return state;
       return {
         drawables: state.drawables.filter((d) => d.id !== id),
-        // Object-erase pushes onto redo, like undo does.
         redoStack: [...state.redoStack, removed],
       };
     }),
@@ -114,7 +138,30 @@ export const useStore = create<InklyState>((set, get) => ({
     }));
   },
 
-  clearAll: () => set({ drawables: [], redoStack: [] }),
+  clearAll: () => set({ drawables: [], redoStack: [], editingId: null }),
+
+  // ─── editing actions ────────────────────────────────────────
+  startEditing: (id) => set({ editingId: id }),
+
+  finishEditing: () =>
+    set((state) => {
+      // If the drawable being edited has empty content, drop it
+      // entirely — empty text/stickies are clutter from accidental clicks.
+      const editingId = state.editingId;
+      if (!editingId) return { editingId: null };
+      const d = state.drawables.find((x) => x.id === editingId);
+      if (
+        d &&
+        (d.kind === "text" || d.kind === "sticky") &&
+        d.text.trim() === ""
+      ) {
+        return {
+          editingId: null,
+          drawables: state.drawables.filter((x) => x.id !== editingId),
+        };
+      }
+      return { editingId: null };
+    }),
 
   // ─── view actions ───────────────────────────────────────────
   setView: (view) => set({ view: { ...view, zoom: clampZoom(view.zoom) } }),
@@ -149,8 +196,6 @@ export const useStore = create<InklyState>((set, get) => ({
   setColor: (color) =>
     set((state) => ({
       color,
-      // Stay in shape/text tools when changing color; only auto-switch
-      // from eraser/object-eraser, where color doesn't apply.
       tool:
         state.tool === "eraser" || state.tool === "object-eraser"
           ? "pen"

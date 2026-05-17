@@ -1,9 +1,7 @@
 /**
  * Inkly — drawing engine
  *
- * Pure rendering. Knows nothing about React or state management.
- * Given a canvas, a view transform, and a list of drawables, it
- * dispatches to the right renderer per drawable kind.
+ * Pure rendering + hit-testing. Knows nothing about React or state.
  */
 
 import type {
@@ -60,7 +58,7 @@ export function worldToScreen(p: Point, view: View): Point {
   };
 }
 
-/* ───────── stroke rendering ───────── */
+/* ───────── stroke / shape / text / sticky rendering ───────── */
 
 function drawStroke(ctx: CanvasRenderingContext2D, s: Stroke): void {
   const { points, color, size, tool } = s;
@@ -100,11 +98,8 @@ function drawStroke(ctx: CanvasRenderingContext2D, s: Stroke): void {
   ctx.restore();
 }
 
-/* ───────── shape rendering ───────── */
-
 function drawShape(ctx: CanvasRenderingContext2D, s: Shape): void {
   const { start, end, color, size, variant } = s;
-
   ctx.save();
   ctx.strokeStyle = color;
   ctx.lineWidth = size;
@@ -139,12 +134,10 @@ function drawShape(ctx: CanvasRenderingContext2D, s: Shape): void {
       break;
     }
     case "arrow": {
-      // Line body
       ctx.beginPath();
       ctx.moveTo(start.x, start.y);
       ctx.lineTo(end.x, end.y);
       ctx.stroke();
-      // Arrowhead: two short lines fanned out from the end point.
       const angle = Math.atan2(end.y - start.y, end.x - start.x);
       const headLength = Math.max(size * 3, 12);
       const wing = Math.PI / 7;
@@ -163,20 +156,14 @@ function drawShape(ctx: CanvasRenderingContext2D, s: Shape): void {
       break;
     }
   }
-
   ctx.restore();
 }
-
-/* ───────── text rendering ───────── */
 
 function drawText(ctx: CanvasRenderingContext2D, t: TextItem): void {
   ctx.save();
   ctx.fillStyle = t.color;
   ctx.textBaseline = "top";
   ctx.font = `${t.fontSize}px Geist, ui-sans-serif, system-ui, sans-serif`;
-
-  // Naive line-wrap: split on newlines from the user; no auto-wrap yet.
-  // (Auto-wrap means measuring text against a max width — easy to add later.)
   const lines = t.text.split("\n");
   const lineHeight = t.fontSize * 1.25;
   for (let i = 0; i < lines.length; i++) {
@@ -185,7 +172,7 @@ function drawText(ctx: CanvasRenderingContext2D, t: TextItem): void {
   ctx.restore();
 }
 
-/* ───────── sticky note rendering ───────── */
+/* ───────── sticky notes ───────── */
 
 const STICKY_BG: Record<StickyColor, string> = {
   yellow: "#fef9c3",
@@ -206,7 +193,6 @@ export const STICKY_H = 180;
 
 function drawSticky(ctx: CanvasRenderingContext2D, n: StickyNote): void {
   ctx.save();
-  // Soft drop shadow.
   ctx.shadowColor = "rgba(0,0,0,0.15)";
   ctx.shadowBlur = 12;
   ctx.shadowOffsetY = 4;
@@ -214,14 +200,11 @@ function drawSticky(ctx: CanvasRenderingContext2D, n: StickyNote): void {
   ctx.fillStyle = STICKY_BG[n.background];
   ctx.strokeStyle = STICKY_BORDER[n.background];
   ctx.lineWidth = 1.5;
-  // Rounded rectangle as the note body.
   roundRect(ctx, n.position.x, n.position.y, STICKY_W, STICKY_H, 8);
   ctx.fill();
-  // Stroke is drawn without shadow.
   ctx.shadowColor = "transparent";
   ctx.stroke();
 
-  // Text on top.
   ctx.fillStyle = "#1a1a1a";
   ctx.textBaseline = "top";
   ctx.font = "16px Geist, ui-sans-serif, system-ui, sans-serif";
@@ -259,7 +242,6 @@ function roundRect(
   ctx.closePath();
 }
 
-/** Greedy word-wrap. Returns an array of lines that fit within maxWidth. */
 function wrapText(
   ctx: CanvasRenderingContext2D,
   text: string,
@@ -287,7 +269,6 @@ function wrapText(
 
 /* ───────── dispatch ───────── */
 
-/** Draw any drawable. */
 export function drawDrawable(ctx: CanvasRenderingContext2D, d: Drawable): void {
   switch (d.kind) {
     case "stroke":
@@ -303,11 +284,16 @@ export function drawDrawable(ctx: CanvasRenderingContext2D, d: Drawable): void {
 
 /**
  * Render every drawable with a view transform applied.
+ *
+ * @param skipId If provided, the drawable with this id is omitted —
+ *   used while text-editing so the canvas doesn't double-render under
+ *   the live DOM textarea.
  */
 export function renderScene(
   ctx: CanvasRenderingContext2D,
   drawables: Drawable[],
   view: View = IDENTITY_VIEW,
+  skipId: string | null = null,
 ): void {
   clearCanvas(ctx);
   const dpr = window.devicePixelRatio || 1;
@@ -320,8 +306,72 @@ export function renderScene(
     view.panX * dpr,
     view.panY * dpr,
   );
-  for (const d of drawables) drawDrawable(ctx, d);
+  for (const d of drawables) {
+    if (d.id === skipId) continue;
+    drawDrawable(ctx, d);
+  }
   ctx.restore();
+}
+
+/* ───────── hit-testing ───────── */
+
+/**
+ * Approximate text bounding box in world space. We can't measure
+ * arbitrary text without a canvas context, so we use a heuristic
+ * based on max line length and font size. Good enough for click-
+ * targeting; the editable textarea will set its own real size.
+ */
+function textBoundsApprox(t: TextItem): {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+} {
+  const lines = t.text.split("\n");
+  const maxLen = lines.reduce((m, l) => Math.max(m, l.length), 0);
+  // Roughly 0.55 em per character is a decent average for sans-serif.
+  const w = Math.max(maxLen * t.fontSize * 0.55, 40);
+  const h = lines.length * t.fontSize * 1.25;
+  return { x: t.position.x, y: t.position.y, w, h };
+}
+
+function pointInRect(
+  p: Point,
+  r: { x: number; y: number; w: number; h: number },
+): boolean {
+  return p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
+}
+
+/**
+ * Find the topmost editable drawable under a world point. Returns
+ * null if no text or sticky is at that position. Iterates back-to-
+ * front because later drawables paint over earlier ones.
+ *
+ * Only text and sticky kinds are tested — strokes and shapes aren't
+ * editable. (Object-erase will get its own hit-test later.)
+ */
+export function hitTestEditable(
+  worldPoint: Point,
+  drawables: Drawable[],
+): Drawable | null {
+  for (let i = drawables.length - 1; i >= 0; i--) {
+    const d = drawables[i];
+    if (d.kind === "text") {
+      if (pointInRect(worldPoint, textBoundsApprox(d))) return d;
+    } else if (d.kind === "sticky") {
+      if (
+        pointInRect(worldPoint, {
+          x: d.position.x,
+          y: d.position.y,
+          w: STICKY_W,
+          h: STICKY_H,
+        })
+      ) {
+        return d;
+      }
+    }
+  }
+  return null;
 }
 
 /* ───────── export ───────── */
