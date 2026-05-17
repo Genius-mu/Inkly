@@ -41,8 +41,8 @@ export default function App() {
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
 
   /**
-   * The drawable currently being authored — could be a stroke or a
-   * shape depending on the active tool. Null when not drawing.
+   * The drawable currently being authored — stroke or shape.
+   * Null when not drawing.
    */
   const inProgressRef = useRef<Drawable | null>(null);
 
@@ -62,6 +62,7 @@ export default function App() {
 
   const drawables = useStore((s) => s.drawables);
   const view = useStore((s) => s.view);
+  const editingId = useStore((s) => s.editingId);
   const addDrawable = useStore((s) => s.addDrawable);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
@@ -80,8 +81,8 @@ export default function App() {
     const handleResize = () => {
       ctxRef.current = setupCanvas(canvas);
       if (ctxRef.current) {
-        const { drawables: d, view: v } = useStore.getState();
-        renderScene(ctxRef.current, d, v);
+        const { drawables: d, view: v, editingId: e } = useStore.getState();
+        renderScene(ctxRef.current, d, v, e);
       }
     };
     handleResize();
@@ -94,9 +95,10 @@ export default function App() {
     };
   }, []);
 
+  // Re-render whenever drawables, view, or editingId change.
   useEffect(() => {
-    if (ctxRef.current) renderScene(ctxRef.current, drawables, view);
-  }, [drawables, view]);
+    if (ctxRef.current) renderScene(ctxRef.current, drawables, view, editingId);
+  }, [drawables, view, editingId]);
 
   /* ───────── wheel + contextmenu (desktop) ───────── */
 
@@ -177,12 +179,11 @@ export default function App() {
   const abandonInProgress = () => {
     inProgressRef.current = null;
     if (ctxRef.current) {
-      const { drawables: d, view: v } = useStore.getState();
-      renderScene(ctxRef.current, d, v);
+      const { drawables: d, view: v, editingId: e } = useStore.getState();
+      renderScene(ctxRef.current, d, v, e);
     }
   };
 
-  /** Convert a screen-space point to world space, using the current view. */
   const screenToWorld = (p: Point): Point => {
     const v = useStore.getState().view;
     return {
@@ -225,11 +226,11 @@ export default function App() {
       return s;
     }
 
-    // Text and sticky tools route through a different code path (next step).
+    // Text and sticky tools route through a different code path
+    // (added in Step 29c-ii).
     return null;
   };
 
-  /** Update the in-progress drawable as the pointer moves to a new world point. */
   const updateInProgress = (worldPoint: Point) => {
     const d = inProgressRef.current;
     if (!d) return;
@@ -273,6 +274,7 @@ export default function App() {
         ctxRef.current,
         [...useStore.getState().drawables, drawable],
         useStore.getState().view,
+        useStore.getState().editingId,
       );
     }
   };
@@ -318,6 +320,7 @@ export default function App() {
       ctxRef.current,
       [...useStore.getState().drawables, inProgress],
       useStore.getState().view,
+      useStore.getState().editingId,
     );
   };
 
@@ -351,11 +354,11 @@ export default function App() {
       inProgressRef.current = null;
       if (!inProgress) return;
 
-      // For shapes: drop degenerate (zero-size) shapes from a stray click.
+      // Drop degenerate (zero-size) shapes from stray clicks.
       if (inProgress.kind === "shape") {
         const dx = inProgress.end.x - inProgress.start.x;
         const dy = inProgress.end.y - inProgress.start.y;
-        if (Math.hypot(dx, dy) < 2) return; // less than 2 world units — ignore
+        if (Math.hypot(dx, dy) < 2) return;
       }
 
       addDrawable(inProgress);
