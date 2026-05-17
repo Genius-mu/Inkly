@@ -1,6 +1,7 @@
 import clsx from "clsx";
 import { useEffect, useRef, useState } from "react";
 import { useStore, type Tool } from "../lib/store";
+import type { StickyColor } from "../types";
 
 const PALETTE = [
   "#0a0a0a", // ink
@@ -24,6 +25,14 @@ const SHAPE_TOOLS: Array<{
   { tool: "arrow", label: "Arrow", icon: () => <ArrowIcon /> },
 ];
 
+/** Sticky note color presets — kept in sync with drawing.ts. */
+const STICKY_COLORS: Array<{ color: StickyColor; swatch: string }> = [
+  { color: "yellow", swatch: "#fef9c3" },
+  { color: "pink", swatch: "#fce7f3" },
+  { color: "blue", swatch: "#dbeafe" },
+  { color: "green", swatch: "#dcfce7" },
+];
+
 interface ToolbarProps {
   onUndo: () => void;
   onRedo: () => void;
@@ -38,6 +47,8 @@ export function Toolbar({ onUndo, onRedo, onClear, onExport }: ToolbarProps) {
   const setSize = useStore((s) => s.setSize);
   const tool = useStore((s) => s.tool);
   const setTool = useStore((s) => s.setTool);
+  const stickyColor = useStore((s) => s.stickyColor);
+  const setStickyColor = useStore((s) => s.setStickyColor);
   const drawables = useStore((s) => s.drawables);
   const redoStack = useStore((s) => s.redoStack);
 
@@ -52,7 +63,7 @@ export function Toolbar({ onUndo, onRedo, onClear, onExport }: ToolbarProps) {
     top: number;
   } | null>(null);
 
-  // Compute popover position whenever it opens (or window resizes while open).
+  /* Reposition the shape popover whenever it opens or the window resizes. */
   useEffect(() => {
     if (!shapeMenuOpen) return;
 
@@ -62,11 +73,9 @@ export function Toolbar({ onUndo, onRedo, onClear, onExport }: ToolbarProps) {
       if (!btn || !pop) return;
       const buttonRect = btn.getBoundingClientRect();
       const popRect = pop.getBoundingClientRect();
-      // Place the popover centered above the button, 8px gap.
       const left = buttonRect.left + buttonRect.width / 2 - popRect.width / 2;
       const top = buttonRect.top - popRect.height - 8;
       setShapeAnchor({
-        // Clamp so the popover never goes off-screen horizontally.
         left: Math.max(
           8,
           Math.min(left, window.innerWidth - popRect.width - 8),
@@ -75,8 +84,6 @@ export function Toolbar({ onUndo, onRedo, onClear, onExport }: ToolbarProps) {
       });
     };
 
-    // Position once, then again after layout settles (popover dimensions
-    // come from its content, so we need the rect after it renders).
     placePopover();
     const raf = requestAnimationFrame(placePopover);
 
@@ -87,7 +94,7 @@ export function Toolbar({ onUndo, onRedo, onClear, onExport }: ToolbarProps) {
     };
   }, [shapeMenuOpen]);
 
-  // Click outside closes the popover.
+  /* Click outside closes the shape popover. */
   useEffect(() => {
     if (!shapeMenuOpen) return;
     const onDocClick = (e: MouseEvent) => {
@@ -163,62 +170,116 @@ export function Toolbar({ onUndo, onRedo, onClear, onExport }: ToolbarProps) {
           {activeShape.icon()}
         </button>
 
-        <Divider />
+        {/* ─── text button ─── */}
+        <ToolButton
+          active={tool === "text"}
+          onClick={() => setTool("text")}
+          label="Text (T)"
+        >
+          <TextIcon />
+        </ToolButton>
 
-        {/* ─── color palette ─── */}
-        <div className="flex shrink-0 items-center gap-1 px-1">
-          {PALETTE.map((c) => (
-            <button
-              key={c}
-              type="button"
-              onClick={() => setColor(c)}
-              aria-label={`Color ${c}`}
-              aria-pressed={color === c}
-              className={clsx(
-                "group relative h-7 w-7 shrink-0 rounded-lg transition-transform",
-                "hover:-translate-y-0.5 active:translate-y-0",
-                color === c && "ring-2 ring-offset-2 ring-neutral-900",
-              )}
-            >
-              <span
-                className="absolute inset-1 rounded-md"
-                style={{ backgroundColor: c }}
-              />
-            </button>
-          ))}
-        </div>
+        {/* ─── sticky button ─── */}
+        <ToolButton
+          active={tool === "sticky"}
+          onClick={() => setTool("sticky")}
+          label="Sticky note (S)"
+        >
+          <StickyIcon />
+        </ToolButton>
 
         <Divider />
 
-        {/* ─── sizes ─── */}
-        <div className="flex shrink-0 items-center gap-0.5 px-1">
-          {SIZES.map((s) => (
-            <button
-              key={s}
-              type="button"
-              onClick={() => setSize(s)}
-              aria-label={`Size ${s}`}
-              aria-pressed={size === s}
-              className={clsx(
-                "grid h-9 w-9 shrink-0 place-items-center rounded-lg transition-colors",
-                size === s ? "bg-neutral-900" : "hover:bg-neutral-100",
-              )}
-            >
-              <span
-                className={clsx(
-                  "block rounded-full transition-colors",
-                  size === s ? "bg-white" : "bg-neutral-900",
-                )}
-                style={{
-                  width: Math.min(s + 2, 18),
-                  height: Math.min(s + 2, 18),
-                }}
-              />
-            </button>
-          ))}
-        </div>
+        {/* ─── sticky color picker (only when sticky tool active) ─── */}
+        {tool === "sticky" && (
+          <>
+            <div className="flex shrink-0 items-center gap-1 px-1">
+              {STICKY_COLORS.map(({ color: c, swatch }) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setStickyColor(c)}
+                  aria-label={`Sticky color ${c}`}
+                  aria-pressed={stickyColor === c}
+                  className={clsx(
+                    "group relative h-7 w-7 shrink-0 rounded-lg transition-transform",
+                    "hover:-translate-y-0.5 active:translate-y-0",
+                    stickyColor === c &&
+                      "ring-2 ring-offset-2 ring-neutral-900",
+                  )}
+                  title={c}
+                >
+                  <span
+                    className="absolute inset-1 rounded-md border border-black/10"
+                    style={{ backgroundColor: swatch }}
+                  />
+                </button>
+              ))}
+            </div>
+            <Divider />
+          </>
+        )}
 
-        <Divider />
+        {/* ─── color palette (hidden when sticky is active — stickies have their own) ─── */}
+        {tool !== "sticky" && (
+          <>
+            <div className="flex shrink-0 items-center gap-1 px-1">
+              {PALETTE.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setColor(c)}
+                  aria-label={`Color ${c}`}
+                  aria-pressed={color === c}
+                  className={clsx(
+                    "group relative h-7 w-7 shrink-0 rounded-lg transition-transform",
+                    "hover:-translate-y-0.5 active:translate-y-0",
+                    color === c && "ring-2 ring-offset-2 ring-neutral-900",
+                  )}
+                >
+                  <span
+                    className="absolute inset-1 rounded-md"
+                    style={{ backgroundColor: c }}
+                  />
+                </button>
+              ))}
+            </div>
+            <Divider />
+          </>
+        )}
+
+        {/* ─── sizes (hidden when sticky / text active — they have their own sizing) ─── */}
+        {tool !== "sticky" && tool !== "text" && (
+          <>
+            <div className="flex shrink-0 items-center gap-0.5 px-1">
+              {SIZES.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setSize(s)}
+                  aria-label={`Size ${s}`}
+                  aria-pressed={size === s}
+                  className={clsx(
+                    "grid h-9 w-9 shrink-0 place-items-center rounded-lg transition-colors",
+                    size === s ? "bg-neutral-900" : "hover:bg-neutral-100",
+                  )}
+                >
+                  <span
+                    className={clsx(
+                      "block rounded-full transition-colors",
+                      size === s ? "bg-white" : "bg-neutral-900",
+                    )}
+                    style={{
+                      width: Math.min(s + 2, 18),
+                      height: Math.min(s + 2, 18),
+                    }}
+                  />
+                </button>
+              ))}
+            </div>
+            <Divider />
+          </>
+        )}
 
         {/* ─── actions ─── */}
         <div className="flex shrink-0 items-center gap-0.5">
@@ -241,7 +302,7 @@ export function Toolbar({ onUndo, onRedo, onClear, onExport }: ToolbarProps) {
         </div>
       </div>
 
-      {/* ─── shape popover: lives OUTSIDE the toolbar so overflow can't clip it ─── */}
+      {/* ─── shape popover (rendered outside the toolbar's overflow) ─── */}
       {shapeMenuOpen && (
         <div
           ref={shapePopoverRef}
@@ -253,7 +314,6 @@ export function Toolbar({ onUndo, onRedo, onClear, onExport }: ToolbarProps) {
           style={{
             left: shapeAnchor?.left ?? -9999,
             top: shapeAnchor?.top ?? -9999,
-            // Hide until positioned to avoid a one-frame flash in the corner.
             visibility: shapeAnchor ? "visible" : "hidden",
           }}
         >
@@ -315,6 +375,36 @@ function SegmentButton({
         active
           ? "bg-white text-neutral-900 shadow-sm"
           : "text-neutral-500 hover:text-neutral-900",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+function ToolButton({
+  active,
+  onClick,
+  label,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      aria-pressed={active}
+      className={clsx(
+        "grid h-9 w-9 shrink-0 place-items-center rounded-lg transition-colors",
+        active
+          ? "bg-neutral-900 text-white"
+          : "text-neutral-700 hover:bg-neutral-100",
       )}
     >
       {children}
@@ -449,6 +539,41 @@ function ArrowIcon() {
     <svg viewBox="0 0 24 24" fill="none" className={iconBase}>
       <path
         d="M5 19L19 5M19 5h-7M19 5v7"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function TextIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={iconBase}>
+      <path
+        d="M4 6V4h16v2M12 4v16M9 20h6"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function StickyIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={iconBase}>
+      <path
+        d="M5 4h11l4 4v12H5z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M16 4v4h4"
         stroke="currentColor"
         strokeWidth="1.6"
         strokeLinecap="round"

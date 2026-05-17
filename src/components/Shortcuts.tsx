@@ -12,6 +12,8 @@ const SHORTCUTS: Shortcut[] = [
   { keys: ["O"], label: "Ellipse" },
   { keys: ["L"], label: "Line" },
   { keys: ["A"], label: "Arrow" },
+  { keys: ["T"], label: "Text" },
+  { keys: ["S"], label: "Sticky note" },
   { keys: ["Space", "drag"], label: "Pan" },
   { keys: ["⌘", "scroll"], label: "Zoom" },
   { keys: ["⌘", "Z"], label: "Undo" },

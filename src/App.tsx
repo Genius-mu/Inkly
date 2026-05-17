@@ -3,10 +3,23 @@ import { Header } from "./components/Header";
 import { Toolbar } from "./components/Toolbar";
 import { Shortcuts } from "./components/Shortcuts";
 import { ZoomControls } from "./components/ZoomControls";
+import { TextEditor } from "./components/TextEditor";
 import { useStore, type Tool } from "./lib/store";
-import { exportCanvasAsPNG, renderScene, setupCanvas } from "./lib/drawing";
+import {
+  exportCanvasAsPNG,
+  hitTestEditable,
+  renderScene,
+  setupCanvas,
+} from "./lib/drawing";
 import { uid } from "./lib/utils";
-import type { Drawable, Point, Shape, Stroke } from "./types";
+import type {
+  Drawable,
+  Point,
+  Shape,
+  StickyNote,
+  Stroke,
+  TextItem,
+} from "./types";
 
 const BUTTON_LEFT = 0;
 const BUTTON_MIDDLE = 1;
@@ -18,6 +31,8 @@ const SHAPE_VARIANTS: Record<string, Shape["variant"] | null> = {
   line: "line",
   arrow: "arrow",
 };
+
+const DEFAULT_TEXT_SIZE = 18;
 
 function isShapeTool(
   tool: Tool,
@@ -40,10 +55,6 @@ export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
 
-  /**
-   * The drawable currently being authored — stroke or shape.
-   * Null when not drawing.
-   */
   const inProgressRef = useRef<Drawable | null>(null);
 
   const panningRef = useRef(false);
@@ -69,6 +80,7 @@ export default function App() {
   const clearAll = useStore((s) => s.clearAll);
   const panBy = useStore((s) => s.panBy);
   const zoomAt = useStore((s) => s.zoomAt);
+  const startEditing = useStore((s) => s.startEditing);
 
   const [confirmingClear, setConfirmingClear] = useState(false);
 
@@ -95,7 +107,6 @@ export default function App() {
     };
   }, []);
 
-  // Re-render whenever drawables, view, or editingId change.
   useEffect(() => {
     if (ctxRef.current) renderScene(ctxRef.current, drawables, view, editingId);
   }, [drawables, view, editingId]);
@@ -192,7 +203,45 @@ export default function App() {
     };
   };
 
-  /** Build a new drawable based on the active tool. */
+  /** Spawn a new text item at the given world point and start editing it. */
+  const spawnText = (worldPoint: Point) => {
+    const { color } = useStore.getState();
+    const t: TextItem = {
+      id: uid(),
+      kind: "text",
+      userId: "local",
+      position: worldPoint,
+      text: "",
+      color,
+      fontSize: DEFAULT_TEXT_SIZE,
+      createdAt: Date.now(),
+    };
+    addDrawable(t);
+    startEditing(t.id);
+  };
+
+  /** Spawn a new sticky note centered at the given world point. */
+  const spawnSticky = (worldPoint: Point) => {
+    const { stickyColor } = useStore.getState();
+    // Center the sticky on the click so it feels deliberate.
+    const STICKY_W = 240;
+    const STICKY_H = 180;
+    const n: StickyNote = {
+      id: uid(),
+      kind: "sticky",
+      userId: "local",
+      position: {
+        x: worldPoint.x - STICKY_W / 2,
+        y: worldPoint.y - STICKY_H / 2,
+      },
+      text: "",
+      background: stickyColor,
+      createdAt: Date.now(),
+    };
+    addDrawable(n);
+    startEditing(n.id);
+  };
+
   const beginDrawable = (worldStart: Point): Drawable | null => {
     const { color, size, tool } = useStore.getState();
 
@@ -226,8 +275,6 @@ export default function App() {
       return s;
     }
 
-    // Text and sticky tools route through a different code path
-    // (added in Step 29c-ii).
     return null;
   };
 
@@ -243,6 +290,11 @@ export default function App() {
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    // If we're currently editing text, let the TextEditor's outside-click
+    // handler commit before anything else happens. (It runs in the capture
+    // phase, so by the time we get here, editingId may have flipped to null.)
+    if (useStore.getState().editingId) return;
+
     const screenPoint = pointerPos(e);
     e.currentTarget.setPointerCapture(e.pointerId);
 
@@ -265,6 +317,19 @@ export default function App() {
     }
 
     const worldPoint = screenToWorld(screenPoint);
+    const { tool } = useStore.getState();
+
+    // Text and sticky tools spawn an editor immediately — they don't
+    // go through the in-progress drag pipeline.
+    if (tool === "text") {
+      spawnText(worldPoint);
+      return;
+    }
+    if (tool === "sticky") {
+      spawnSticky(worldPoint);
+      return;
+    }
+
     const drawable = beginDrawable(worldPoint);
     if (!drawable) return;
 
@@ -354,7 +419,6 @@ export default function App() {
       inProgressRef.current = null;
       if (!inProgress) return;
 
-      // Drop degenerate (zero-size) shapes from stray clicks.
       if (inProgress.kind === "shape") {
         const dx = inProgress.end.x - inProgress.start.x;
         const dy = inProgress.end.y - inProgress.start.y;
@@ -365,6 +429,20 @@ export default function App() {
     },
     [addDrawable],
   );
+
+  /** Double-click → start editing existing text/sticky under the cursor. */
+  const handleDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const screen: Point = {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+    };
+    const world = screenToWorld(screen);
+    const hit = hitTestEditable(world, useStore.getState().drawables);
+    if (hit && (hit.kind === "text" || hit.kind === "sticky")) {
+      startEditing(hit.id);
+    }
+  };
 
   /* ───────── export ───────── */
 
@@ -396,6 +474,8 @@ export default function App() {
         else if (k === "o") useStore.getState().setTool("ellipse");
         else if (k === "l") useStore.getState().setTool("line");
         else if (k === "a") useStore.getState().setTool("arrow");
+        else if (k === "t") useStore.getState().setTool("text");
+        else if (k === "s") useStore.getState().setTool("sticky");
       }
     };
     window.addEventListener("keydown", onKey);
@@ -409,7 +489,15 @@ export default function App() {
       ? "cursor-grabbing"
       : cursorMode === "grab"
         ? "cursor-grab"
-        : "cursor-crosshair";
+        : useStore.getState().tool === "text" ||
+            useStore.getState().tool === "sticky"
+          ? "cursor-text"
+          : "cursor-crosshair";
+
+  // The drawable currently being edited (if any), for the overlay.
+  const editingDrawable = editingId
+    ? drawables.find((d) => d.id === editingId)
+    : null;
 
   return (
     <div className="grid h-dvh grid-rows-[auto_1fr] overflow-hidden bg-white">
@@ -438,6 +526,7 @@ export default function App() {
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerUp}
+          onDoubleClick={handleDoubleClick}
         />
 
         {drawables.length === 0 && (
@@ -476,6 +565,13 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* Text/sticky editor overlay */}
+        {editingDrawable &&
+          (editingDrawable.kind === "text" ||
+            editingDrawable.kind === "sticky") && (
+            <TextEditor drawable={editingDrawable} />
+          )}
 
         <div className="safe-bottom pointer-events-none absolute inset-x-0 bottom-0 flex justify-center px-3 pb-6">
           <Toolbar
