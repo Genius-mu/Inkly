@@ -1,43 +1,174 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../lib/store";
 import { signOut } from "../lib/supabase";
+import type { Drawable } from "../types";
 
 export function Header() {
   const drawables = useStore((s) => s.drawables);
   const user = useStore((s) => s.user);
 
   return (
-    <header className="safe-x z-50 flex items-center justify-between border-b border-neutral-200 bg-white/80 px-4 py-3 backdrop-blur-md sm:px-6 sm:py-3.5">
-      {/* ─── wordmark ─── */}
-      <div className="flex items-center gap-2 sm:gap-2.5">
+    <header
+      className="
+        safe-x relative z-40 flex items-center justify-between
+        border-b border-neutral-200 bg-white/85 px-4 py-3 backdrop-blur-md
+        sm:px-6 sm:py-3
+      "
+    >
+      {/* ─── left: brand + room context ─── */}
+      <div className="flex min-w-0 items-center gap-2.5 sm:gap-3">
         <Mark />
-        <h1 className="text-base font-semibold tracking-tight text-neutral-900 sm:text-[19px]">
-          Inkly
-        </h1>
-        <span className="ml-1 hidden rounded-md bg-neutral-100 px-1.5 py-0.5 font-mono text-[10px] font-medium text-neutral-500 sm:inline">
-          v0.1
-        </span>
+        <div className="flex min-w-0 items-baseline gap-2">
+          <h1 className="text-base font-semibold tracking-tight text-neutral-900 sm:text-[17px]">
+            Inkly
+          </h1>
+          <span className="hidden text-neutral-300 sm:inline" aria-hidden>
+            /
+          </span>
+          <RoomContext />
+        </div>
       </div>
 
-      {/* ─── status: items count + user chip ─── */}
+      {/* ─── right: items chip + user ─── */}
       <div className="flex items-center gap-1.5 sm:gap-2">
-        <Pill>
-          <span className="h-1.5 w-1.5 rounded-full bg-signal" />
-          <span className="font-medium tabular-nums text-neutral-900">
-            {drawables.length}
-          </span>
-          <span className="hidden text-neutral-500 sm:inline">
-            {drawables.length === 1 ? "item" : "items"}
-          </span>
-        </Pill>
-
+        <ItemsChip drawables={drawables} />
         {user && <UserChip email={user.email ?? user.name} />}
       </div>
     </header>
   );
 }
 
-/* ─── user chip with dropdown menu ───────────────────────────── */
+/* ─── room context: name + sync status ─────────────────────── */
+
+function RoomContext() {
+  const lastActivityAt = useStore((s) => s.lastActivityAt);
+  const [recentlyChanged, setRecentlyChanged] = useState(false);
+
+  // Pulse the sync dot for ~700ms whenever something changes.
+  useEffect(() => {
+    if (lastActivityAt === 0) return;
+    setRecentlyChanged(true);
+    const t = setTimeout(() => setRecentlyChanged(false), 700);
+    return () => clearTimeout(t);
+  }, [lastActivityAt]);
+
+  return (
+    <div className="flex min-w-0 flex-col">
+      <span className="truncate text-[13px] font-medium text-neutral-700 sm:text-sm">
+        solo canvas
+      </span>
+      <span className="hidden items-center gap-1 font-mono text-[10px] tracking-wide text-neutral-400 sm:inline-flex">
+        <span
+          className={`
+            inline-block h-1 w-1 rounded-full transition-all duration-500
+            ${recentlyChanged ? "bg-signal scale-150" : "bg-neutral-300 scale-100"}
+          `}
+          aria-hidden
+        />
+        <span>{recentlyChanged ? "syncing" : "saved · local"}</span>
+      </span>
+    </div>
+  );
+}
+
+/* ─── items chip — count + animated rollover ───────────────── */
+
+interface ItemsChipProps {
+  drawables: Drawable[];
+}
+
+function ItemsChip({ drawables }: ItemsChipProps) {
+  const breakdown = useMemo(() => countByKind(drawables), [drawables]);
+
+  // Animate the count number on change.
+  const prevCount = useRef(drawables.length);
+  const [bump, setBump] = useState(false);
+  useEffect(() => {
+    if (drawables.length !== prevCount.current) {
+      setBump(true);
+      const t = setTimeout(() => setBump(false), 240);
+      prevCount.current = drawables.length;
+      return () => clearTimeout(t);
+    }
+  }, [drawables.length]);
+
+  // Hover state for desktop breakdown reveal.
+  const [hovered, setHovered] = useState(false);
+
+  const summary = summarizeBreakdown(breakdown);
+
+  return (
+    <div
+      className="
+        group relative inline-flex items-center gap-1.5 rounded-full
+        border border-neutral-200 bg-white py-1 pr-2.5 pl-2
+        font-mono text-[11px] transition-colors hover:bg-neutral-50
+      "
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      title={fullBreakdownString(breakdown)}
+    >
+      <span
+        className={`
+          inline-block h-1.5 w-1.5 rounded-full transition-all duration-300
+          ${bump ? "scale-150 bg-signal" : "scale-100 bg-neutral-400"}
+        `}
+        aria-hidden
+      />
+      <span
+        key={drawables.length /* re-mount on change → triggers transition */}
+        className={`
+          tabular-nums font-medium text-neutral-900 transition-transform duration-200
+          ${bump ? "scale-110" : "scale-100"}
+        `}
+      >
+        {drawables.length}
+      </span>
+      <span className="hidden text-neutral-500 sm:inline">
+        {hovered ? summary : drawables.length === 1 ? "item" : "items"}
+      </span>
+    </div>
+  );
+}
+
+interface KindCounts {
+  stroke: number;
+  shape: number;
+  text: number;
+  sticky: number;
+}
+
+function countByKind(drawables: Drawable[]): KindCounts {
+  const counts: KindCounts = { stroke: 0, shape: 0, text: 0, sticky: 0 };
+  for (const d of drawables) counts[d.kind]++;
+  return counts;
+}
+
+/** Short summary for the chip — names only the most-prominent kinds. */
+function summarizeBreakdown(c: KindCounts): string {
+  const parts: string[] = [];
+  if (c.stroke) parts.push(`${c.stroke} stroke${c.stroke === 1 ? "" : "s"}`);
+  if (c.shape) parts.push(`${c.shape} shape${c.shape === 1 ? "" : "s"}`);
+  if (c.text) parts.push(`${c.text} text`);
+  if (c.sticky) parts.push(`${c.sticky} sticky`);
+  if (parts.length === 0) return "empty canvas";
+  // Keep it short on hover — first two kinds, then "…" if more.
+  if (parts.length <= 2) return parts.join(" · ");
+  return parts.slice(0, 2).join(" · ") + " · …";
+}
+
+/** Full breakdown for the title tooltip. */
+function fullBreakdownString(c: KindCounts): string {
+  const parts: string[] = [];
+  if (c.stroke) parts.push(`${c.stroke} stroke${c.stroke === 1 ? "" : "s"}`);
+  if (c.shape) parts.push(`${c.shape} shape${c.shape === 1 ? "" : "s"}`);
+  if (c.text) parts.push(`${c.text} text item${c.text === 1 ? "" : "s"}`);
+  if (c.sticky)
+    parts.push(`${c.sticky} sticky note${c.sticky === 1 ? "" : "s"}`);
+  return parts.length === 0 ? "Empty canvas" : parts.join(", ");
+}
+
+/* ─── user chip (largely unchanged — only minor tweaks) ───── */
 
 interface UserChipProps {
   email: string;
@@ -53,7 +184,6 @@ function UserChip({ email }: UserChipProps) {
     null,
   );
 
-  // Position the menu when it opens, and reposition on resize.
   useEffect(() => {
     if (!open) return;
 
@@ -63,7 +193,6 @@ function UserChip({ email }: UserChipProps) {
       if (!btn || !menu) return;
       const btnRect = btn.getBoundingClientRect();
       const menuRect = menu.getBoundingClientRect();
-      // Right-align the menu's right edge with the button's right edge.
       const left = btnRect.right - menuRect.width;
       const top = btnRect.bottom + 6;
       setAnchor({
@@ -77,7 +206,6 @@ function UserChip({ email }: UserChipProps) {
 
     place();
     const raf = requestAnimationFrame(place);
-
     window.addEventListener("resize", place);
     return () => {
       cancelAnimationFrame(raf);
@@ -85,21 +213,18 @@ function UserChip({ email }: UserChipProps) {
     };
   }, [open]);
 
-  // Click outside closes.
   useEffect(() => {
     if (!open) return;
     const onDocClick = (e: MouseEvent) => {
       const t = e.target as Node;
-      if (buttonRef.current?.contains(t) || menuRef.current?.contains(t)) {
+      if (buttonRef.current?.contains(t) || menuRef.current?.contains(t))
         return;
-      }
       setOpen(false);
     };
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [open]);
 
-  // Escape key closes the menu.
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -113,17 +238,12 @@ function UserChip({ email }: UserChipProps) {
     setSigningOut(true);
     try {
       await signOut();
-      // The auth state listener in useAuth.ts picks this up and the
-      // modal re-mounts automatically — nothing else for us to do.
     } finally {
-      // No need to setSigningOut(false) — the component will unmount
-      // when the auth state flips. But just in case:
       setSigningOut(false);
       setOpen(false);
     }
   };
 
-  // Initial for the small avatar circle inside the chip.
   const initial = email.charAt(0).toUpperCase() || "?";
 
   return (
@@ -136,8 +256,9 @@ function UserChip({ email }: UserChipProps) {
         aria-haspopup="menu"
         className="
           inline-flex items-center gap-2 rounded-full border border-neutral-200
-          bg-white py-1 pr-3 pl-1
-          transition-colors hover:bg-neutral-50
+          bg-white py-1 pr-3 pl-1 transition-all
+          hover:bg-neutral-50 hover:border-neutral-300
+          active:scale-[0.97]
         "
         title="Account"
       >
@@ -145,17 +266,14 @@ function UserChip({ email }: UserChipProps) {
           aria-hidden
           className="
             grid h-6 w-6 place-items-center rounded-full
-            bg-signal font-mono text-[11px] font-medium text-white
+            bg-gradient-to-br from-signal to-signal-deep
+            font-mono text-[11px] font-semibold text-white
+            shadow-[inset_0_-1px_0_rgba(0,0,0,0.15)]
           "
         >
           {initial}
         </span>
-        <span
-          className="
-            hidden max-w-[160px] truncate font-mono text-[11px]
-            text-neutral-700 sm:inline
-          "
-        >
+        <span className="hidden max-w-[160px] truncate font-mono text-[11px] text-neutral-700 sm:inline">
           {email}
         </span>
       </button>
@@ -175,7 +293,6 @@ function UserChip({ email }: UserChipProps) {
             visibility: anchor ? "visible" : "hidden",
           }}
         >
-          {/* email header — shown in full inside the menu, even if truncated in the chip */}
           <div className="border-b border-neutral-100 px-3 py-2.5">
             <p className="text-[10px] tracking-wider uppercase text-neutral-400">
               Signed in as
@@ -212,7 +329,7 @@ function Mark() {
   return (
     <svg
       viewBox="0 0 24 24"
-      className="h-6 w-6 sm:h-7 sm:w-7"
+      className="h-7 w-7 sm:h-8 sm:w-8"
       aria-hidden="true"
     >
       <path
@@ -222,14 +339,6 @@ function Mark() {
       <path d="M 14 4 L 20 10 L 14 10 Z" fill="#2563eb" />
       <circle cx="11" cy="14" r="1.6" fill="white" />
     </svg>
-  );
-}
-
-function Pill({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="inline-flex items-center gap-1.5 rounded-full border border-neutral-200 bg-white px-2 py-1 font-mono text-[11px] sm:px-2.5">
-      {children}
-    </div>
   );
 }
 

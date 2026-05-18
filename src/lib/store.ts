@@ -3,7 +3,8 @@
  *
  * Single source of truth for: drawables on the canvas, the current
  * pan/zoom view, the undo/redo stacks, the active tool, the id of
- * the drawable currently being text-edited, and the signed-in user.
+ * the drawable currently being text-edited, the signed-in user,
+ * and a recency timestamp that drives activity animations.
  */
 
 import { create } from "zustand";
@@ -33,6 +34,11 @@ interface InklyState {
   drawables: Drawable[];
   redoStack: Drawable[];
   editingId: string | null;
+  /**
+   * Timestamp (ms) of the last drawable mutation — add, remove,
+   * update, or clear. Drives the activity pulse in the header.
+   */
+  lastActivityAt: number;
 
   // View state
   view: View;
@@ -84,6 +90,7 @@ export const useStore = create<InklyState>((set, get) => ({
   drawables: [],
   redoStack: [],
   editingId: null,
+  lastActivityAt: 0,
 
   view: DEFAULT_VIEW,
 
@@ -101,6 +108,7 @@ export const useStore = create<InklyState>((set, get) => ({
     set((state) => ({
       drawables: [...state.drawables, d],
       redoStack: [],
+      lastActivityAt: Date.now(),
     })),
 
   updateDrawable: (id, patch) =>
@@ -108,6 +116,7 @@ export const useStore = create<InklyState>((set, get) => ({
       drawables: state.drawables.map((d) =>
         d.id === id ? ({ ...d, ...patch } as Drawable) : d,
       ),
+      lastActivityAt: Date.now(),
     })),
 
   removeDrawable: (id) =>
@@ -117,6 +126,7 @@ export const useStore = create<InklyState>((set, get) => ({
       return {
         drawables: state.drawables.filter((d) => d.id !== id),
         redoStack: [...state.redoStack, removed],
+        lastActivityAt: Date.now(),
       };
     }),
 
@@ -127,6 +137,7 @@ export const useStore = create<InklyState>((set, get) => ({
     set((state) => ({
       drawables: state.drawables.slice(0, -1),
       redoStack: [...state.redoStack, last],
+      lastActivityAt: Date.now(),
     }));
   },
 
@@ -137,10 +148,17 @@ export const useStore = create<InklyState>((set, get) => ({
     set((state) => ({
       drawables: [...state.drawables, d],
       redoStack: state.redoStack.slice(0, -1),
+      lastActivityAt: Date.now(),
     }));
   },
 
-  clearAll: () => set({ drawables: [], redoStack: [], editingId: null }),
+  clearAll: () =>
+    set({
+      drawables: [],
+      redoStack: [],
+      editingId: null,
+      lastActivityAt: Date.now(),
+    }),
 
   // ─── editing actions ────────────────────────────────────────
   startEditing: (id) => set({ editingId: id }),
@@ -158,6 +176,7 @@ export const useStore = create<InklyState>((set, get) => ({
         return {
           editingId: null,
           drawables: state.drawables.filter((x) => x.id !== editingId),
+          lastActivityAt: Date.now(),
         };
       }
       return { editingId: null };
