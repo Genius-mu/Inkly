@@ -14,6 +14,7 @@ import {
   hitTestSelection,
   renderScene,
   setupCanvas,
+  translateDrawable,
 } from "./lib/drawing";
 import { uid } from "./lib/utils";
 import type {
@@ -37,6 +38,9 @@ const SHAPE_VARIANTS: Record<string, Shape["variant"] | null> = {
 };
 
 const DEFAULT_TEXT_SIZE = 18;
+
+/** World units to offset duplicated drawables so they don't sit exactly under the originals. */
+const DUPLICATE_OFFSET = 16;
 
 function isShapeTool(
   tool: Tool,
@@ -76,6 +80,17 @@ export default function App() {
     distance: number;
   } | null>(null);
 
+  /**
+   * Drag state. When the user grabs a selected drawable, we record:
+   *  - the world point where they clicked (used to compute delta)
+   *  - the *original* drawables at click time (so each frame's translation
+   *    starts from the original, not the cumulatively-translated version)
+   */
+  const dragStateRef = useRef<{
+    startWorld: Point;
+    originals: Map<string, Drawable>;
+  } | null>(null);
+
   const drawables = useStore((s) => s.drawables);
   const view = useStore((s) => s.view);
   const editingId = useStore((s) => s.editingId);
@@ -85,6 +100,8 @@ export default function App() {
   const selectedIds = useStore((s) => s.selectedIds);
   const addDrawable = useStore((s) => s.addDrawable);
   const removeDrawable = useStore((s) => s.removeDrawable);
+  const removeMany = useStore((s) => s.removeMany);
+  const replaceDrawable = useStore((s) => s.replaceDrawable);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
   const clearAll = useStore((s) => s.clearAll);
@@ -92,6 +109,7 @@ export default function App() {
   const zoomAt = useStore((s) => s.zoomAt);
   const startEditing = useStore((s) => s.startEditing);
   const selectOne = useStore((s) => s.selectOne);
+  const selectMany = useStore((s) => s.selectMany);
   const clearSelection = useStore((s) => s.clearSelection);
 
   const [confirmingClear, setConfirmingClear] = useState(false);
@@ -208,6 +226,7 @@ export default function App() {
 
   const abandonInProgress = () => {
     inProgressRef.current = null;
+    dragStateRef.current = null;
     if (ctxRef.current) {
       const s = useStore.getState();
       renderScene(
@@ -267,15 +286,41 @@ export default function App() {
     if (hit) removeDrawable(hit.id);
   };
 
-  /** Click handler for the select tool. */
-  const handleSelectClick = (worldPoint: Point) => {
-    const { drawables: d } = useStore.getState();
-    const hit = hitTestSelection(worldPoint, d);
-    if (hit) {
-      selectOne(hit.id);
-    } else {
+  /**
+   * Handle a click in select mode. Returns true if a drag should begin
+   * (i.e. the click landed on something), false if we just cleared.
+   */
+  const handleSelectClick = (worldPoint: Point): boolean => {
+    const state = useStore.getState();
+    const hit = hitTestSelection(worldPoint, state.drawables);
+    if (!hit) {
       clearSelection();
+      return false;
     }
+    // If the hit isn't already selected, select only it. Otherwise
+    // keep the current selection (the user may have multi-selected).
+    if (!state.selectedIds.has(hit.id)) {
+      selectOne(hit.id);
+    }
+    return true;
+  };
+
+  /**
+   * Start a drag of the current selection. Snapshot the originals so
+   * each frame translates from the un-moved version, not cumulatively.
+   */
+  const beginDrag = (worldPoint: Point) => {
+    const state = useStore.getState();
+    const originals = new Map<string, Drawable>();
+    for (const d of state.drawables) {
+      if (state.selectedIds.has(d.id)) {
+        originals.set(d.id, d);
+      }
+    }
+    dragStateRef.current = {
+      startWorld: worldPoint,
+      originals,
+    };
   };
 
   const beginDrawable = (worldStart: Point): Drawable | null => {
@@ -351,9 +396,9 @@ export default function App() {
     const worldPoint = screenToWorld(screenPoint);
     const { tool: t } = useStore.getState();
 
-    // Select tool: hit-test and select. No in-progress drawable.
     if (t === "select") {
-      handleSelectClick(worldPoint);
+      const hit = handleSelectClick(worldPoint);
+      if (hit) beginDrag(worldPoint);
       return;
     }
 
@@ -418,6 +463,20 @@ export default function App() {
       return;
     }
 
+    // Drag-to-move: translate every selected drawable by the world delta.
+    if (dragStateRef.current && e.buttons === 1) {
+      const worldPoint = screenToWorld(screenPoint);
+      const dx = worldPoint.x - dragStateRef.current.startWorld.x;
+      const dy = worldPoint.y - dragStateRef.current.startWorld.y;
+      for (const [id, original] of dragStateRef.current.originals) {
+        replaceDrawable(translateDrawable(original, dx, dy));
+        // The variable `id` isn't used directly — the new drawable carries
+        // its own id from `translateDrawable` (which preserves it via spread).
+        void id;
+      }
+      return;
+    }
+
     if (useStore.getState().tool === "object-eraser" && e.buttons === 1) {
       const worldPoint = screenToWorld(screenPoint);
       eraseAt(worldPoint);
@@ -452,6 +511,7 @@ export default function App() {
         if (touchesRef.current.size < 2) pinchStateRef.current = null;
         if (touchesRef.current.size >= 1) {
           inProgressRef.current = null;
+          dragStateRef.current = null;
           return;
         }
       }
@@ -460,6 +520,13 @@ export default function App() {
         panningRef.current = false;
         lastPanPosRef.current = null;
         setCursorMode(isSpaceHeldRef.current ? "grab" : "draw");
+        return;
+      }
+
+      // End of a drag — drag state was already pushed to the store
+      // on each move, so we just clear the ref.
+      if (dragStateRef.current) {
+        dragStateRef.current = null;
         return;
       }
 
@@ -488,6 +555,49 @@ export default function App() {
     }
   };
 
+  /* ───────── selection operations (keyboard) ───────── */
+
+  const deleteSelection = useCallback(() => {
+    const ids = Array.from(useStore.getState().selectedIds);
+    if (ids.length === 0) return;
+    removeMany(ids);
+  }, [removeMany]);
+
+  const duplicateSelection = useCallback(() => {
+    const state = useStore.getState();
+    const ids = Array.from(state.selectedIds);
+    if (ids.length === 0) return;
+
+    const originals = state.drawables.filter((d) =>
+      state.selectedIds.has(d.id),
+    );
+    const newIds: string[] = [];
+    for (const d of originals) {
+      const copy: Drawable = {
+        ...translateDrawable(d, DUPLICATE_OFFSET, DUPLICATE_OFFSET),
+        id: uid(),
+        createdAt: Date.now(),
+      };
+      newIds.push(copy.id);
+      addDrawable(copy);
+    }
+    // Select the duplicates so the user can drag them further if they want.
+    selectMany(newIds);
+  }, [addDrawable, selectMany]);
+
+  const nudgeSelection = useCallback(
+    (dx: number, dy: number) => {
+      const state = useStore.getState();
+      if (state.selectedIds.size === 0) return;
+      for (const d of state.drawables) {
+        if (state.selectedIds.has(d.id)) {
+          replaceDrawable(translateDrawable(d, dx, dy));
+        }
+      }
+    },
+    [replaceDrawable],
+  );
+
   /* ───────── export ───────── */
 
   const handleExport = useCallback(() => {
@@ -506,30 +616,74 @@ export default function App() {
         useStore.getState().clearSelection();
         return;
       }
+
       const meta = e.metaKey || e.ctrlKey;
+      const typing = isTyping(e.target);
+
+      // Cmd/Ctrl combinations
       if (meta && e.key.toLowerCase() === "z") {
         e.preventDefault();
         if (e.shiftKey) redo();
         else undo();
-      } else if (!meta && !isTyping(e.target)) {
-        const k = e.key.toLowerCase();
-        if (k === "v") useStore.getState().setTool("select");
-        else if (k === "p") useStore.getState().setTool("pen");
-        else if (k === "e") useStore.getState().setTool("eraser");
-        else if (k === "x") useStore.getState().setTool("object-eraser");
-        else if (k === "r") useStore.getState().setTool("rect");
-        else if (k === "o") useStore.getState().setTool("ellipse");
-        else if (k === "l") useStore.getState().setTool("line");
-        else if (k === "a") useStore.getState().setTool("arrow");
-        else if (k === "t") useStore.getState().setTool("text");
-        else if (k === "s") useStore.getState().setTool("sticky");
+        return;
+      }
+      if (meta && e.key.toLowerCase() === "d" && !typing) {
+        e.preventDefault();
+        duplicateSelection();
+        return;
+      }
+
+      // Selection operations (only when not typing)
+      if (!typing) {
+        if (e.key === "Backspace" || e.key === "Delete") {
+          // Only act if there's a selection — otherwise let the browser handle it.
+          if (useStore.getState().selectedIds.size > 0) {
+            e.preventDefault();
+            deleteSelection();
+            return;
+          }
+        }
+
+        // Arrow keys nudge the selection
+        if (
+          e.key === "ArrowUp" ||
+          e.key === "ArrowDown" ||
+          e.key === "ArrowLeft" ||
+          e.key === "ArrowRight"
+        ) {
+          if (useStore.getState().selectedIds.size === 0) return;
+          e.preventDefault();
+          const step = e.shiftKey ? 10 : 1;
+          if (e.key === "ArrowUp") nudgeSelection(0, -step);
+          else if (e.key === "ArrowDown") nudgeSelection(0, step);
+          else if (e.key === "ArrowLeft") nudgeSelection(-step, 0);
+          else if (e.key === "ArrowRight") nudgeSelection(step, 0);
+          return;
+        }
+
+        // Tool shortcuts (single keys, no modifiers)
+        if (!meta) {
+          const k = e.key.toLowerCase();
+          if (k === "v") useStore.getState().setTool("select");
+          else if (k === "p") useStore.getState().setTool("pen");
+          else if (k === "e") useStore.getState().setTool("eraser");
+          else if (k === "x") useStore.getState().setTool("object-eraser");
+          else if (k === "r") useStore.getState().setTool("rect");
+          else if (k === "o") useStore.getState().setTool("ellipse");
+          else if (k === "l") useStore.getState().setTool("line");
+          else if (k === "a") useStore.getState().setTool("arrow");
+          else if (k === "t") useStore.getState().setTool("text");
+          else if (k === "s") useStore.getState().setTool("sticky");
+        }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [redo, undo]);
+  }, [redo, undo, deleteSelection, duplicateSelection, nudgeSelection]);
 
   /* ───────── render ───────── */
+
+  const isDragging = dragStateRef.current !== null;
 
   const cursorClass =
     cursorMode === "grabbing"
@@ -537,7 +691,9 @@ export default function App() {
       : cursorMode === "grab"
         ? "cursor-grab"
         : tool === "select"
-          ? "cursor-default"
+          ? isDragging
+            ? "cursor-grabbing"
+            : "cursor-default"
           : tool === "text" || tool === "sticky"
             ? "cursor-text"
             : tool === "object-eraser"

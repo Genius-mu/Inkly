@@ -16,11 +16,16 @@ const SHORTCUTS: Shortcut[] = [
   { keys: ["A"], label: "Arrow" },
   { keys: ["T"], label: "Text" },
   { keys: ["S"], label: "Sticky note" },
+  { keys: ["Drag"], label: "Move selection" },
+  { keys: ["↑", "↓", "←", "→"], label: "Nudge 1px" },
+  { keys: ["⇧", "↑"], label: "Nudge 10px" },
+  { keys: ["⌘", "D"], label: "Duplicate" },
+  { keys: ["Del"], label: "Delete selection" },
   { keys: ["Space", "drag"], label: "Pan" },
   { keys: ["⌘", "scroll"], label: "Zoom" },
   { keys: ["⌘", "Z"], label: "Undo" },
   { keys: ["⇧", "⌘", "Z"], label: "Redo" },
-  { keys: ["Esc"], label: "Close dialog" },
+  { keys: ["Esc"], label: "Close / deselect" },
   { keys: ["?"], label: "Show shortcuts" },
 ];
 

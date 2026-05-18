@@ -25,7 +25,6 @@ const SHAPE_TOOLS: Array<{
   { tool: "arrow", label: "Arrow", icon: () => <ArrowIcon /> },
 ];
 
-/** Sticky note color presets — kept in sync with drawing.ts. */
 const STICKY_COLORS: Array<{ color: StickyColor; swatch: string }> = [
   { color: "yellow", swatch: "#fef9c3" },
   { color: "pink", swatch: "#fce7f3" },
@@ -131,6 +130,17 @@ export function Toolbar({ onUndo, onRedo, onClear, onExport }: ToolbarProps) {
           shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_-8px_rgba(0,0,0,0.12)]
         "
       >
+        {/* ─── select tool ─── */}
+        <ToolButton
+          active={tool === "select"}
+          onClick={() => setTool("select")}
+          label="Select (V)"
+        >
+          <SelectIcon />
+        </ToolButton>
+
+        <Divider />
+
         {/* ─── pen / pixel-eraser segmented toggle ─── */}
         <div className="flex shrink-0 rounded-xl bg-neutral-100 p-0.5">
           <SegmentButton
@@ -229,8 +239,8 @@ export function Toolbar({ onUndo, onRedo, onClear, onExport }: ToolbarProps) {
           </>
         )}
 
-        {/* ─── color palette (hidden when sticky is active — stickies have their own) ─── */}
-        {tool !== "sticky" && (
+        {/* ─── color palette (hidden when sticky/select active) ─── */}
+        {tool !== "sticky" && tool !== "select" && (
           <>
             <div className="flex shrink-0 items-center gap-1 px-1">
               {PALETTE.map((c) => (
@@ -257,8 +267,8 @@ export function Toolbar({ onUndo, onRedo, onClear, onExport }: ToolbarProps) {
           </>
         )}
 
-        {/* ─── sizes (hidden when sticky / text active — they have their own sizing) ─── */}
-        {tool !== "sticky" && tool !== "text" && (
+        {/* ─── sizes (hidden when sticky/text/select active) ─── */}
+        {tool !== "sticky" && tool !== "text" && tool !== "select" && (
           <>
             <div className="flex shrink-0 items-center gap-0.5 px-1">
               {SIZES.map((s) => (
@@ -311,7 +321,7 @@ export function Toolbar({ onUndo, onRedo, onClear, onExport }: ToolbarProps) {
         </div>
       </div>
 
-      {/* ─── shape popover (rendered outside the toolbar's overflow) ─── */}
+      {/* ─── shape popover ─── */}
       {shapeMenuOpen && (
         <div
           ref={shapePopoverRef}
@@ -458,6 +468,20 @@ function IconButton({
 
 const iconBase = "h-[18px] w-[18px]";
 
+function SelectIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={iconBase}>
+      <path
+        d="M5 3l5 14 2.5-6 6-2.5L5 3z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function PenIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" className={iconBase}>
@@ -494,6 +518,22 @@ function EraserIcon() {
         stroke="currentColor"
         strokeWidth="1.6"
         strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function ScissorsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={iconBase}>
+      <circle cx="6" cy="6" r="3" stroke="currentColor" strokeWidth="1.6" />
+      <circle cx="6" cy="18" r="3" stroke="currentColor" strokeWidth="1.6" />
+      <path
+        d="M20 4L8.12 15.88M14.47 14.48L20 20M8.12 8.12L12 12"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       />
     </svg>
   );
@@ -653,22 +693,6 @@ function TrashIcon() {
     <svg viewBox="0 0 24 24" fill="none" className={iconBase}>
       <path
         d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function ScissorsIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className={iconBase}>
-      <circle cx="6" cy="6" r="3" stroke="currentColor" strokeWidth="1.6" />
-      <circle cx="6" cy="18" r="3" stroke="currentColor" strokeWidth="1.6" />
-      <path
-        d="M20 4L8.12 15.88M14.47 14.48L20 20M8.12 8.12L12 12"
         stroke="currentColor"
         strokeWidth="1.6"
         strokeLinecap="round"
