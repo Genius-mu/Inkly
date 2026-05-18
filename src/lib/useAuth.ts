@@ -14,12 +14,11 @@ import type { User } from "../types";
 /** Convert a Supabase user object into our app's User shape. */
 function toAppUser(supaUser: { id: string; email?: string | null }): User {
   const email = supaUser.email ?? "";
-  // Derive a display name from the email (the part before @).
-  // We don't have a "name" field — for portfolio scope this is enough.
   const name = email.split("@")[0] || "anonymous";
   return {
     id: supaUser.id,
     name,
+    email, // ← add this
     color: pickPresenceColor(supaUser.id),
   };
 }
