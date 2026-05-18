@@ -340,12 +340,13 @@ function drawSelectionOutline(
 /* ───────── scene rendering ───────── */
 
 /**
- * Render every drawable with a view transform applied. Optionally
- * draws selection outlines for drawables whose ids are in selectedIds.
+ * Render every drawable with a view transform applied. Selection
+ * outlines are drawn for any ids in selectedIds, and an optional
+ * marquee rectangle is drawn on top of everything.
  *
- * @param skipId Drawable to omit from rendering — used during text
- *   editing to avoid double-rendering under the DOM textarea.
- * @param selectedIds Drawables to draw selection outlines around.
+ * @param skipId Drawable to omit from rendering (used during text editing).
+ * @param selectedIds Drawables to outline as selected.
+ * @param marqueeRect World-space rectangle to draw as an in-progress marquee.
  */
 export function renderScene(
   ctx: CanvasRenderingContext2D,
@@ -353,6 +354,7 @@ export function renderScene(
   view: View = IDENTITY_VIEW,
   skipId: string | null = null,
   selectedIds: Set<string> = new Set(),
+  marqueeRect: Bounds | null = null,
 ): void {
   clearCanvas(ctx);
   const dpr = window.devicePixelRatio || 1;
@@ -372,7 +374,7 @@ export function renderScene(
     drawDrawable(ctx, d);
   }
 
-  // Second pass: selection outlines on top of everything.
+  // Second pass: selection outlines on top.
   if (selectedIds.size > 0) {
     for (const d of drawables) {
       if (selectedIds.has(d.id) && d.id !== skipId) {
@@ -381,9 +383,43 @@ export function renderScene(
     }
   }
 
+  // Third pass: marquee rectangle, if any. Always drawn last so it
+  // sits above everything else.
+  if (marqueeRect) {
+    drawMarquee(ctx, marqueeRect, view.zoom);
+  }
+
   ctx.restore();
 }
 
+/**
+ * Draw the marquee selection rectangle. Semi-transparent fill,
+ * crisp 1px outline. Line widths divided by zoom so the outline
+ * stays exactly one screen pixel at any zoom level.
+ */
+function drawMarquee(
+  ctx: CanvasRenderingContext2D,
+  rect: Bounds,
+  zoom: number,
+): void {
+  ctx.save();
+  // Normalize the rect — width/height can be negative if the user is
+  // dragging up-and-to-the-left from the start point.
+  const x = rect.w < 0 ? rect.x + rect.w : rect.x;
+  const y = rect.h < 0 ? rect.y + rect.h : rect.y;
+  const w = Math.abs(rect.w);
+  const h = Math.abs(rect.h);
+
+  ctx.fillStyle = "rgba(37, 99, 235, 0.08)";
+  ctx.strokeStyle = "#2563eb";
+  ctx.lineWidth = 1 / zoom;
+
+  ctx.beginPath();
+  ctx.rect(x, y, w, h);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
 /* ───────── geometry for hit-testing ───────── */
 
 function pointToSegmentDistance(p: Point, a: Point, b: Point): number {
@@ -660,4 +696,28 @@ export function exportCanvasAsPNG(
     a.remove();
     URL.revokeObjectURL(url);
   }, "image/png");
+}
+
+/**
+ * Test if two axis-aligned rectangles overlap. Used for marquee
+ * selection — both rects in world space.
+ */
+function rectsOverlap(a: Bounds, b: Bounds): boolean {
+  return (
+    a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+  );
+}
+
+/**
+ * Return the ids of every drawable whose bounding box overlaps the
+ * given world-space rectangle. Used by marquee selection.
+ */
+export function drawablesInRect(rect: Bounds, drawables: Drawable[]): string[] {
+  const out: string[] = [];
+  for (const d of drawables) {
+    if (rectsOverlap(rect, getBounds(d))) {
+      out.push(d.id);
+    }
+  }
+  return out;
 }
