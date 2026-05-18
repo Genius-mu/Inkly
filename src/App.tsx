@@ -8,6 +8,7 @@ import { AuthModal } from "./components/AuthModal";
 import { useStore, type Tool } from "./lib/store";
 import { useAuth } from "./lib/useAuth";
 import {
+  drawablesInRect,
   exportCanvasAsPNG,
   hitTestAny,
   hitTestEditable,
@@ -91,6 +92,19 @@ export default function App() {
     originals: Map<string, Drawable>;
   } | null>(null);
 
+  /**
+   * Marquee selection state. While the user drags an empty-canvas
+   * pointer with the select tool, we record the start and current
+   * world points. On pointerup, every drawable whose bounding box
+   * overlaps this rect gets selected.
+   */
+  const marqueeRef = useRef<{
+    startWorld: Point;
+    currentWorld: Point;
+    /** When true, the marquee adds to existing selection instead of replacing. */
+    additive: boolean;
+  } | null>(null);
+
   const drawables = useStore((s) => s.drawables);
   const view = useStore((s) => s.view);
   const editingId = useStore((s) => s.editingId);
@@ -110,6 +124,7 @@ export default function App() {
   const startEditing = useStore((s) => s.startEditing);
   const selectOne = useStore((s) => s.selectOne);
   const selectMany = useStore((s) => s.selectMany);
+  const toggleSelected = useStore((s) => s.toggleSelected);
   const clearSelection = useStore((s) => s.clearSelection);
 
   const [confirmingClear, setConfirmingClear] = useState(false);
@@ -227,6 +242,7 @@ export default function App() {
   const abandonInProgress = () => {
     inProgressRef.current = null;
     dragStateRef.current = null;
+    marqueeRef.current = null;
     if (ctxRef.current) {
       const s = useStore.getState();
       renderScene(
@@ -288,17 +304,34 @@ export default function App() {
 
   /**
    * Handle a click in select mode. Returns true if a drag should begin
-   * (i.e. the click landed on something), false if we just cleared.
+   * (i.e. the click landed on something), false if we just cleared
+   * or should start a marquee.
+   *
+   * @param shiftHeld When true, Shift was held — additive selection.
    */
-  const handleSelectClick = (worldPoint: Point): boolean => {
+  const handleSelectClick = (
+    worldPoint: Point,
+    shiftHeld: boolean,
+  ): boolean => {
     const state = useStore.getState();
     const hit = hitTestSelection(worldPoint, state.drawables);
+
     if (!hit) {
-      clearSelection();
+      // Empty canvas click. With Shift, leave the selection alone
+      // (so the marquee can be additive). Without, clear it.
+      if (!shiftHeld) clearSelection();
       return false;
     }
-    // If the hit isn't already selected, select only it. Otherwise
-    // keep the current selection (the user may have multi-selected).
+
+    if (shiftHeld) {
+      // Shift+click toggles the hit in/out of the selection.
+      toggleSelected(hit.id);
+      // If the hit is now selected, allow dragging to begin.
+      return useStore.getState().selectedIds.has(hit.id);
+    }
+
+    // Normal click — if not already in selection, replace selection
+    // with just this one. Otherwise keep the multi-selection intact.
     if (!state.selectedIds.has(hit.id)) {
       selectOne(hit.id);
     }
@@ -321,6 +354,31 @@ export default function App() {
       startWorld: worldPoint,
       originals,
     };
+  };
+
+  /** Start a marquee selection from the given world point. */
+  const beginMarquee = (worldPoint: Point, additive: boolean) => {
+    marqueeRef.current = {
+      startWorld: worldPoint,
+      currentWorld: worldPoint,
+      additive,
+    };
+  };
+
+  /** Compute the marquee's world-space bounds, normalizing negative w/h. */
+  const marqueeBounds = (): {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  } | null => {
+    const m = marqueeRef.current;
+    if (!m) return null;
+    const x1 = Math.min(m.startWorld.x, m.currentWorld.x);
+    const y1 = Math.min(m.startWorld.y, m.currentWorld.y);
+    const w = Math.abs(m.currentWorld.x - m.startWorld.x);
+    const h = Math.abs(m.currentWorld.y - m.startWorld.y);
+    return { x: x1, y: y1, w, h };
   };
 
   const beginDrawable = (worldStart: Point): Drawable | null => {
@@ -397,8 +455,13 @@ export default function App() {
     const { tool: t } = useStore.getState();
 
     if (t === "select") {
-      const hit = handleSelectClick(worldPoint);
-      if (hit) beginDrag(worldPoint);
+      const hit = handleSelectClick(worldPoint, e.shiftKey);
+      if (hit) {
+        beginDrag(worldPoint);
+      } else {
+        // Empty canvas — start a marquee selection.
+        beginMarquee(worldPoint, e.shiftKey);
+      }
       return;
     }
 
@@ -463,6 +526,25 @@ export default function App() {
       return;
     }
 
+    // Marquee selection: update the current world point and re-render
+    // so the rectangle follows the cursor.
+    if (marqueeRef.current && e.buttons === 1) {
+      const worldPoint = screenToWorld(screenPoint);
+      marqueeRef.current.currentWorld = worldPoint;
+      if (ctxRef.current) {
+        const s = useStore.getState();
+        renderScene(
+          ctxRef.current,
+          s.drawables,
+          s.view,
+          s.editingId,
+          s.selectedIds,
+          marqueeBounds(),
+        );
+      }
+      return;
+    }
+
     // Drag-to-move: translate every selected drawable by the world delta.
     if (dragStateRef.current && e.buttons === 1) {
       const worldPoint = screenToWorld(screenPoint);
@@ -470,8 +552,6 @@ export default function App() {
       const dy = worldPoint.y - dragStateRef.current.startWorld.y;
       for (const [id, original] of dragStateRef.current.originals) {
         replaceDrawable(translateDrawable(original, dx, dy));
-        // The variable `id` isn't used directly — the new drawable carries
-        // its own id from `translateDrawable` (which preserves it via spread).
         void id;
       }
       return;
@@ -512,6 +592,7 @@ export default function App() {
         if (touchesRef.current.size >= 1) {
           inProgressRef.current = null;
           dragStateRef.current = null;
+          marqueeRef.current = null;
           return;
         }
       }
@@ -520,6 +601,37 @@ export default function App() {
         panningRef.current = false;
         lastPanPosRef.current = null;
         setCursorMode(isSpaceHeldRef.current ? "grab" : "draw");
+        return;
+      }
+
+      // End of a marquee — compute final hit list, commit to selection.
+      if (marqueeRef.current) {
+        const m = marqueeRef.current;
+        const bounds = marqueeBounds();
+        marqueeRef.current = null;
+        if (bounds && (bounds.w > 2 || bounds.h > 2)) {
+          // Real marquee (not a stray click). Hit-test and select.
+          const state = useStore.getState();
+          const ids = drawablesInRect(bounds, state.drawables);
+          if (m.additive) {
+            // Add to existing selection.
+            const combined = new Set([...state.selectedIds, ...ids]);
+            selectMany(Array.from(combined));
+          } else {
+            selectMany(ids);
+          }
+        }
+        // Re-render to clear the marquee rectangle.
+        if (ctxRef.current) {
+          const s = useStore.getState();
+          renderScene(
+            ctxRef.current,
+            s.drawables,
+            s.view,
+            s.editingId,
+            s.selectedIds,
+          );
+        }
         return;
       }
 
@@ -542,7 +654,7 @@ export default function App() {
 
       addDrawable(inProgress);
     },
-    [addDrawable],
+    [addDrawable, selectMany],
   );
 
   const handleDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -581,7 +693,6 @@ export default function App() {
       newIds.push(copy.id);
       addDrawable(copy);
     }
-    // Select the duplicates so the user can drag them further if they want.
     selectMany(newIds);
   }, [addDrawable, selectMany]);
 
@@ -636,7 +747,6 @@ export default function App() {
       // Selection operations (only when not typing)
       if (!typing) {
         if (e.key === "Backspace" || e.key === "Delete") {
-          // Only act if there's a selection — otherwise let the browser handle it.
           if (useStore.getState().selectedIds.size > 0) {
             e.preventDefault();
             deleteSelection();
@@ -684,6 +794,7 @@ export default function App() {
   /* ───────── render ───────── */
 
   const isDragging = dragStateRef.current !== null;
+  const isMarqueeing = marqueeRef.current !== null;
 
   const cursorClass =
     cursorMode === "grabbing"
@@ -693,7 +804,9 @@ export default function App() {
         : tool === "select"
           ? isDragging
             ? "cursor-grabbing"
-            : "cursor-default"
+            : isMarqueeing
+              ? "cursor-crosshair"
+              : "cursor-default"
           : tool === "text" || tool === "sticky"
             ? "cursor-text"
             : tool === "object-eraser"
