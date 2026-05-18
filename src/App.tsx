@@ -11,6 +11,7 @@ import {
   exportCanvasAsPNG,
   hitTestAny,
   hitTestEditable,
+  hitTestSelection,
   renderScene,
   setupCanvas,
 } from "./lib/drawing";
@@ -55,7 +56,6 @@ function pinchMetrics(a: Point, b: Point) {
 }
 
 export default function App() {
-  // Subscribe to Supabase auth state — populates user / authReady in the store.
   useAuth();
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -82,6 +82,7 @@ export default function App() {
   const tool = useStore((s) => s.tool);
   const user = useStore((s) => s.user);
   const authReady = useStore((s) => s.authReady);
+  const selectedIds = useStore((s) => s.selectedIds);
   const addDrawable = useStore((s) => s.addDrawable);
   const removeDrawable = useStore((s) => s.removeDrawable);
   const undo = useStore((s) => s.undo);
@@ -90,10 +91,11 @@ export default function App() {
   const panBy = useStore((s) => s.panBy);
   const zoomAt = useStore((s) => s.zoomAt);
   const startEditing = useStore((s) => s.startEditing);
+  const selectOne = useStore((s) => s.selectOne);
+  const clearSelection = useStore((s) => s.clearSelection);
 
   const [confirmingClear, setConfirmingClear] = useState(false);
 
-  /** Either the signed-in user's id, or "local" if not signed in (offline mode). */
   const currentUserId = user?.id ?? "local";
 
   /* ───────── canvas lifecycle ───────── */
@@ -105,8 +107,14 @@ export default function App() {
     const handleResize = () => {
       ctxRef.current = setupCanvas(canvas);
       if (ctxRef.current) {
-        const { drawables: d, view: v, editingId: e } = useStore.getState();
-        renderScene(ctxRef.current, d, v, e);
+        const s = useStore.getState();
+        renderScene(
+          ctxRef.current,
+          s.drawables,
+          s.view,
+          s.editingId,
+          s.selectedIds,
+        );
       }
     };
     handleResize();
@@ -120,8 +128,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (ctxRef.current) renderScene(ctxRef.current, drawables, view, editingId);
-  }, [drawables, view, editingId]);
+    if (ctxRef.current) {
+      renderScene(ctxRef.current, drawables, view, editingId, selectedIds);
+    }
+  }, [drawables, view, editingId, selectedIds]);
 
   /* ───────── wheel + contextmenu ───────── */
 
@@ -199,8 +209,14 @@ export default function App() {
   const abandonInProgress = () => {
     inProgressRef.current = null;
     if (ctxRef.current) {
-      const { drawables: d, view: v, editingId: e } = useStore.getState();
-      renderScene(ctxRef.current, d, v, e);
+      const s = useStore.getState();
+      renderScene(
+        ctxRef.current,
+        s.drawables,
+        s.view,
+        s.editingId,
+        s.selectedIds,
+      );
     }
   };
 
@@ -249,6 +265,17 @@ export default function App() {
     const { drawables: d } = useStore.getState();
     const hit = hitTestAny(worldPoint, d, 4);
     if (hit) removeDrawable(hit.id);
+  };
+
+  /** Click handler for the select tool. */
+  const handleSelectClick = (worldPoint: Point) => {
+    const { drawables: d } = useStore.getState();
+    const hit = hitTestSelection(worldPoint, d);
+    if (hit) {
+      selectOne(hit.id);
+    } else {
+      clearSelection();
+    }
   };
 
   const beginDrawable = (worldStart: Point): Drawable | null => {
@@ -324,6 +351,12 @@ export default function App() {
     const worldPoint = screenToWorld(screenPoint);
     const { tool: t } = useStore.getState();
 
+    // Select tool: hit-test and select. No in-progress drawable.
+    if (t === "select") {
+      handleSelectClick(worldPoint);
+      return;
+    }
+
     if (t === "text") {
       spawnText(worldPoint);
       return;
@@ -342,11 +375,13 @@ export default function App() {
 
     inProgressRef.current = drawable;
     if (ctxRef.current) {
+      const s = useStore.getState();
       renderScene(
         ctxRef.current,
-        [...useStore.getState().drawables, drawable],
-        useStore.getState().view,
-        useStore.getState().editingId,
+        [...s.drawables, drawable],
+        s.view,
+        s.editingId,
+        s.selectedIds,
       );
     }
   };
@@ -394,11 +429,13 @@ export default function App() {
 
     const worldPoint = screenToWorld(screenPoint);
     updateInProgress(worldPoint);
+    const s = useStore.getState();
     renderScene(
       ctxRef.current,
-      [...useStore.getState().drawables, inProgress],
-      useStore.getState().view,
-      useStore.getState().editingId,
+      [...s.drawables, inProgress],
+      s.view,
+      s.editingId,
+      s.selectedIds,
     );
   };
 
@@ -466,6 +503,7 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         setConfirmingClear(false);
+        useStore.getState().clearSelection();
         return;
       }
       const meta = e.metaKey || e.ctrlKey;
@@ -475,7 +513,8 @@ export default function App() {
         else undo();
       } else if (!meta && !isTyping(e.target)) {
         const k = e.key.toLowerCase();
-        if (k === "p") useStore.getState().setTool("pen");
+        if (k === "v") useStore.getState().setTool("select");
+        else if (k === "p") useStore.getState().setTool("pen");
         else if (k === "e") useStore.getState().setTool("eraser");
         else if (k === "x") useStore.getState().setTool("object-eraser");
         else if (k === "r") useStore.getState().setTool("rect");
@@ -497,19 +536,18 @@ export default function App() {
       ? "cursor-grabbing"
       : cursorMode === "grab"
         ? "cursor-grab"
-        : tool === "text" || tool === "sticky"
-          ? "cursor-text"
-          : tool === "object-eraser"
-            ? "cursor-pointer"
-            : "cursor-crosshair";
+        : tool === "select"
+          ? "cursor-default"
+          : tool === "text" || tool === "sticky"
+            ? "cursor-text"
+            : tool === "object-eraser"
+              ? "cursor-pointer"
+              : "cursor-crosshair";
 
   const editingDrawable = editingId
     ? drawables.find((d) => d.id === editingId)
     : null;
 
-  // The gate: while we're still checking for a session, show nothing
-  // (or a loading splash, depending on taste). When ready, if there's
-  // no user, the canvas renders but the modal blocks interaction.
   const showAuth = authReady && !user;
 
   return (
@@ -597,7 +635,6 @@ export default function App() {
         <ZoomControls canvasRef={canvasRef} />
         <Shortcuts />
 
-        {/* Real auth gate: shown only when auth has resolved AND no user is signed in. */}
         {showAuth && <AuthModal />}
 
         {confirmingClear && (

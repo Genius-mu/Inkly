@@ -3,8 +3,9 @@
  *
  * Single source of truth for: drawables on the canvas, the current
  * pan/zoom view, the undo/redo stacks, the active tool, the id of
- * the drawable currently being text-edited, the signed-in user,
- * and a recency timestamp that drives activity animations.
+ * the drawable currently being text-edited, which drawables are
+ * selected, the signed-in user, and a recency timestamp for the
+ * activity pulse.
  */
 
 import { create } from "zustand";
@@ -15,6 +16,7 @@ const MAX_ZOOM = 8;
 const DEFAULT_VIEW: View = { panX: 0, panY: 0, zoom: 1 };
 
 export type Tool =
+  | "select" // ← NEW
   | "pen"
   | "eraser"
   | "object-eraser"
@@ -34,11 +36,10 @@ interface InklyState {
   drawables: Drawable[];
   redoStack: Drawable[];
   editingId: string | null;
-  /**
-   * Timestamp (ms) of the last drawable mutation — add, remove,
-   * update, or clear. Drives the activity pulse in the header.
-   */
   lastActivityAt: number;
+
+  // Selection state
+  selectedIds: Set<string>;
 
   // View state
   view: View;
@@ -56,7 +57,9 @@ interface InklyState {
   // Drawable actions
   addDrawable: (d: Drawable) => void;
   updateDrawable: (id: string, patch: Partial<Drawable>) => void;
+  replaceDrawable: (d: Drawable) => void;
   removeDrawable: (id: string) => void;
+  removeMany: (ids: string[]) => void;
   undo: () => void;
   redo: () => void;
   clearAll: () => void;
@@ -64,6 +67,12 @@ interface InklyState {
   // Editing actions
   startEditing: (id: string) => void;
   finishEditing: () => void;
+
+  // Selection actions
+  selectOne: (id: string) => void;
+  toggleSelected: (id: string) => void;
+  selectMany: (ids: string[]) => void;
+  clearSelection: () => void;
 
   // View actions
   setView: (view: View) => void;
@@ -92,6 +101,8 @@ export const useStore = create<InklyState>((set, get) => ({
   editingId: null,
   lastActivityAt: 0,
 
+  selectedIds: new Set<string>(),
+
   view: DEFAULT_VIEW,
 
   color: "#0a0a0a",
@@ -119,13 +130,41 @@ export const useStore = create<InklyState>((set, get) => ({
       lastActivityAt: Date.now(),
     })),
 
+  /**
+   * Replace a drawable with a new (translated, transformed, etc.)
+   * version that has the same id. Used by drag-to-move so the
+   * type-safe per-kind logic lives outside the store.
+   */
+  replaceDrawable: (next) =>
+    set((state) => ({
+      drawables: state.drawables.map((d) => (d.id === next.id ? next : d)),
+      lastActivityAt: Date.now(),
+    })),
+
   removeDrawable: (id) =>
     set((state) => {
       const removed = state.drawables.find((d) => d.id === id);
       if (!removed) return state;
+      const nextSelected = new Set(state.selectedIds);
+      nextSelected.delete(id);
       return {
         drawables: state.drawables.filter((d) => d.id !== id),
         redoStack: [...state.redoStack, removed],
+        selectedIds: nextSelected,
+        lastActivityAt: Date.now(),
+      };
+    }),
+
+  /** Bulk delete — used by Backspace on a multi-selection. */
+  removeMany: (ids) =>
+    set((state) => {
+      const idSet = new Set(ids);
+      const removed = state.drawables.filter((d) => idSet.has(d.id));
+      if (removed.length === 0) return state;
+      return {
+        drawables: state.drawables.filter((d) => !idSet.has(d.id)),
+        redoStack: [...state.redoStack, ...removed],
+        selectedIds: new Set(),
         lastActivityAt: Date.now(),
       };
     }),
@@ -157,6 +196,7 @@ export const useStore = create<InklyState>((set, get) => ({
       drawables: [],
       redoStack: [],
       editingId: null,
+      selectedIds: new Set(),
       lastActivityAt: Date.now(),
     }),
 
@@ -181,6 +221,21 @@ export const useStore = create<InklyState>((set, get) => ({
       }
       return { editingId: null };
     }),
+
+  // ─── selection actions ──────────────────────────────────────
+  selectOne: (id) => set({ selectedIds: new Set([id]) }),
+
+  toggleSelected: (id) =>
+    set((state) => {
+      const next = new Set(state.selectedIds);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return { selectedIds: next };
+    }),
+
+  selectMany: (ids) => set({ selectedIds: new Set(ids) }),
+
+  clearSelection: () => set({ selectedIds: new Set() }),
 
   // ─── view actions ───────────────────────────────────────────
   setView: (view) => set({ view: { ...view, zoom: clampZoom(view.zoom) } }),

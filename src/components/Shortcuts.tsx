@@ -6,6 +6,7 @@ interface Shortcut {
 }
 
 const SHORTCUTS: Shortcut[] = [
+  { keys: ["V"], label: "Select / move" },
   { keys: ["P"], label: "Pen" },
   { keys: ["E"], label: "Pixel eraser" },
   { keys: ["X"], label: "Object eraser" },

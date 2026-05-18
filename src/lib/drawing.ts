@@ -17,6 +17,9 @@ import type {
 
 export const IDENTITY_VIEW: View = { panX: 0, panY: 0, zoom: 1 };
 
+/** Color of the selection outline and handles. Same as the signal blue. */
+const SELECTION_COLOR = "#2563eb";
+
 /* ───────── canvas setup ───────── */
 
 export function setupCanvas(
@@ -282,18 +285,74 @@ export function drawDrawable(ctx: CanvasRenderingContext2D, d: Drawable): void {
   }
 }
 
+/* ───────── selection outline ───────── */
+
 /**
- * Render every drawable with a view transform applied.
+ * Draw the selection outline + corner handles around a drawable's
+ * bounding box. The canvas already has the world-transform applied,
+ * so we divide line widths and handle sizes by `zoom` to keep them
+ * screen-pixel-sized regardless of zoom level.
+ */
+function drawSelectionOutline(
+  ctx: CanvasRenderingContext2D,
+  d: Drawable,
+  zoom: number,
+): void {
+  const b = getBounds(d);
+  if (b.w === 0 && b.h === 0) return;
+
+  // Inflate the outline a touch beyond the bounds, in screen pixels.
+  const inflate = 6 / zoom;
+  const x = b.x - inflate;
+  const y = b.y - inflate;
+  const w = b.w + inflate * 2;
+  const h = b.h + inflate * 2;
+
+  ctx.save();
+  ctx.strokeStyle = SELECTION_COLOR;
+  ctx.lineWidth = 1.5 / zoom;
+
+  // The outline itself.
+  ctx.beginPath();
+  ctx.rect(x, y, w, h);
+  ctx.stroke();
+
+  // Corner handles — small filled squares with a white border so
+  // they're visible against any underlying color.
+  const handleSize = 8 / zoom;
+  const half = handleSize / 2;
+  const corners = [
+    { x: x, y: y },
+    { x: x + w, y: y },
+    { x: x, y: y + h },
+    { x: x + w, y: y + h },
+  ];
+  for (const c of corners) {
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(c.x - half, c.y - half, handleSize, handleSize);
+    ctx.strokeStyle = SELECTION_COLOR;
+    ctx.lineWidth = 1.5 / zoom;
+    ctx.strokeRect(c.x - half, c.y - half, handleSize, handleSize);
+  }
+  ctx.restore();
+}
+
+/* ───────── scene rendering ───────── */
+
+/**
+ * Render every drawable with a view transform applied. Optionally
+ * draws selection outlines for drawables whose ids are in selectedIds.
  *
- * @param skipId If provided, the drawable with this id is omitted —
- *   used while text-editing so the canvas doesn't double-render under
- *   the live DOM textarea.
+ * @param skipId Drawable to omit from rendering — used during text
+ *   editing to avoid double-rendering under the DOM textarea.
+ * @param selectedIds Drawables to draw selection outlines around.
  */
 export function renderScene(
   ctx: CanvasRenderingContext2D,
   drawables: Drawable[],
   view: View = IDENTITY_VIEW,
   skipId: string | null = null,
+  selectedIds: Set<string> = new Set(),
 ): void {
   clearCanvas(ctx);
   const dpr = window.devicePixelRatio || 1;
@@ -306,50 +365,102 @@ export function renderScene(
     view.panX * dpr,
     view.panY * dpr,
   );
+
+  // First pass: all drawables in their natural order.
   for (const d of drawables) {
     if (d.id === skipId) continue;
     drawDrawable(ctx, d);
   }
+
+  // Second pass: selection outlines on top of everything.
+  if (selectedIds.size > 0) {
+    for (const d of drawables) {
+      if (selectedIds.has(d.id) && d.id !== skipId) {
+        drawSelectionOutline(ctx, d, view.zoom);
+      }
+    }
+  }
+
   ctx.restore();
 }
 
-/* ───────── hit-testing ───────── */
+/* ───────── geometry for hit-testing ───────── */
 
-/**
- * Approximate text bounding box in world space. We can't measure
- * arbitrary text without a canvas context, so we use a heuristic
- * based on max line length and font size. Good enough for click-
- * targeting; the editable textarea will set its own real size.
- */
-function textBoundsApprox(t: TextItem): {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-} {
+function pointToSegmentDistance(p: Point, a: Point, b: Point): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const closestX = a.x + t * dx;
+  const closestY = a.y + t * dy;
+  return Math.hypot(p.x - closestX, p.y - closestY);
+}
+
+function pointToPolylineDistance(p: Point, points: Point[]): number {
+  if (points.length === 0) return Infinity;
+  if (points.length === 1) {
+    return Math.hypot(p.x - points[0].x, p.y - points[0].y);
+  }
+  let min = Infinity;
+  for (let i = 0; i < points.length - 1; i++) {
+    const d = pointToSegmentDistance(p, points[i], points[i + 1]);
+    if (d < min) min = d;
+  }
+  return min;
+}
+
+function pointToRectOutlineDistance(
+  p: Point,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): number {
+  const tl = { x, y };
+  const tr = { x: x + w, y };
+  const br = { x: x + w, y: y + h };
+  const bl = { x, y: y + h };
+  return Math.min(
+    pointToSegmentDistance(p, tl, tr),
+    pointToSegmentDistance(p, tr, br),
+    pointToSegmentDistance(p, br, bl),
+    pointToSegmentDistance(p, bl, tl),
+  );
+}
+
+function pointToEllipseDistance(
+  p: Point,
+  cx: number,
+  cy: number,
+  rx: number,
+  ry: number,
+): number {
+  if (rx === 0 || ry === 0) return Math.hypot(p.x - cx, p.y - cy);
+  const nx = (p.x - cx) / rx;
+  const ny = (p.y - cy) / ry;
+  const len = Math.hypot(nx, ny);
+  if (len === 0) return Math.min(rx, ry);
+  const closestX = cx + (nx / len) * rx;
+  const closestY = cy + (ny / len) * ry;
+  return Math.hypot(p.x - closestX, p.y - closestY);
+}
+
+/* ───────── editable-only hit-test (for double-click → edit text) ───────── */
+
+function textBoundsApprox(t: TextItem): Bounds {
   const lines = t.text.split("\n");
   const maxLen = lines.reduce((m, l) => Math.max(m, l.length), 0);
-  // Roughly 0.55 em per character is a decent average for sans-serif.
   const w = Math.max(maxLen * t.fontSize * 0.55, 40);
   const h = lines.length * t.fontSize * 1.25;
   return { x: t.position.x, y: t.position.y, w, h };
 }
 
-function pointInRect(
-  p: Point,
-  r: { x: number; y: number; w: number; h: number },
-): boolean {
+function pointInRect(p: Point, r: Bounds): boolean {
   return p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
 }
 
-/**
- * Find the topmost editable drawable under a world point. Returns
- * null if no text or sticky is at that position. Iterates back-to-
- * front because later drawables paint over earlier ones.
- *
- * Only text and sticky kinds are tested — strokes and shapes aren't
- * editable. (Object-erase will get its own hit-test later.)
- */
 export function hitTestEditable(
   worldPoint: Point,
   drawables: Drawable[],
@@ -374,121 +485,8 @@ export function hitTestEditable(
   return null;
 }
 
-/* ───────── export ───────── */
+/* ───────── precise hit-test (for object eraser) ───────── */
 
-export function exportCanvasAsPNG(
-  canvas: HTMLCanvasElement,
-  filename = "inkly-drawing.png",
-): void {
-  const out = document.createElement("canvas");
-  out.width = canvas.width;
-  out.height = canvas.height;
-  const ctx = out.getContext("2d");
-  if (!ctx) return;
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, out.width, out.height);
-  ctx.drawImage(canvas, 0, 0);
-  out.toBlob((blob) => {
-    if (!blob) return;
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  }, "image/png");
-}
-
-/* ───────── geometry for hit-testing ───────── */
-
-/** Distance from point p to segment ab. */
-function pointToSegmentDistance(p: Point, a: Point, b: Point): number {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const lenSq = dx * dx + dy * dy;
-  if (lenSq === 0) return Math.hypot(p.x - a.x, p.y - a.y);
-  // Project p onto the segment, parameter t in [0,1].
-  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq;
-  t = Math.max(0, Math.min(1, t));
-  const closestX = a.x + t * dx;
-  const closestY = a.y + t * dy;
-  return Math.hypot(p.x - closestX, p.y - closestY);
-}
-
-/** Closest distance from point p to any segment in a polyline. */
-function pointToPolylineDistance(p: Point, points: Point[]): number {
-  if (points.length === 0) return Infinity;
-  if (points.length === 1) {
-    return Math.hypot(p.x - points[0].x, p.y - points[0].y);
-  }
-  let min = Infinity;
-  for (let i = 0; i < points.length - 1; i++) {
-    const d = pointToSegmentDistance(p, points[i], points[i + 1]);
-    if (d < min) min = d;
-  }
-  return min;
-}
-
-/** Distance from point p to the outline of an axis-aligned rectangle. */
-function pointToRectOutlineDistance(
-  p: Point,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-): number {
-  // The rect is four segments. Take the minimum distance to each.
-  const tl = { x, y };
-  const tr = { x: x + w, y };
-  const br = { x: x + w, y: y + h };
-  const bl = { x, y: y + h };
-  return Math.min(
-    pointToSegmentDistance(p, tl, tr),
-    pointToSegmentDistance(p, tr, br),
-    pointToSegmentDistance(p, br, bl),
-    pointToSegmentDistance(p, bl, tl),
-  );
-}
-
-/**
- * Approximate distance from point p to an ellipse outline centered
- * at (cx, cy) with radii (rx, ry).
- *
- * Exact distance-to-ellipse requires solving a quartic. The standard
- * cheap approximation: normalize the point into a unit circle, find
- * its closest point on the unit circle, denormalize. Good enough for
- * hit-testing.
- */
-function pointToEllipseDistance(
-  p: Point,
-  cx: number,
-  cy: number,
-  rx: number,
-  ry: number,
-): number {
-  if (rx === 0 || ry === 0) return Math.hypot(p.x - cx, p.y - cy);
-  // Vector from center to point, scaled into unit-circle space.
-  const nx = (p.x - cx) / rx;
-  const ny = (p.y - cy) / ry;
-  const len = Math.hypot(nx, ny);
-  if (len === 0) return Math.min(rx, ry); // dead-center; rough estimate
-  // Closest unit-circle point, projected back to ellipse space.
-  const closestX = cx + (nx / len) * rx;
-  const closestY = cy + (ny / len) * ry;
-  return Math.hypot(p.x - closestX, p.y - closestY);
-}
-
-/* ───────── full hit-test (for object eraser) ───────── */
-
-/**
- * Hit-test against any drawable, accounting for stroke width and a
- * small click-tolerance buffer. Returns the topmost match.
- *
- * @param tolerance Extra pixels added to each drawable's natural
- *   hit-radius. In world space, so it stays click-friendly at all zooms.
- */
 export function hitTestAny(
   worldPoint: Point,
   drawables: Drawable[],
@@ -531,25 +529,135 @@ function didHit(p: Point, d: Drawable, tolerance: number): boolean {
       return false;
     }
     case "text": {
-      // Re-use the same approximate bounds we already use for editing.
-      const lines = d.text.split("\n");
-      const maxLen = lines.reduce((m, l) => Math.max(m, l.length), 0);
-      const w = Math.max(maxLen * d.fontSize * 0.55, 40);
-      const h = lines.length * d.fontSize * 1.25;
-      return (
-        p.x >= d.position.x &&
-        p.x <= d.position.x + w &&
-        p.y >= d.position.y &&
-        p.y <= d.position.y + h
-      );
+      return pointInRect(p, textBoundsApprox(d));
     }
     case "sticky": {
-      return (
-        p.x >= d.position.x &&
-        p.x <= d.position.x + STICKY_W &&
-        p.y >= d.position.y &&
-        p.y <= d.position.y + STICKY_H
-      );
+      return pointInRect(p, {
+        x: d.position.x,
+        y: d.position.y,
+        w: STICKY_W,
+        h: STICKY_H,
+      });
     }
   }
+}
+
+/* ───────── bounds (for selection outlines + drag math) ───────── */
+
+export interface Bounds {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export function getBounds(d: Drawable): Bounds {
+  switch (d.kind) {
+    case "stroke": {
+      if (d.points.length === 0) return { x: 0, y: 0, w: 0, h: 0 };
+      let minX = Infinity,
+        minY = Infinity,
+        maxX = -Infinity,
+        maxY = -Infinity;
+      for (const p of d.points) {
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y > maxY) maxY = p.y;
+      }
+      const pad = d.size / 2;
+      return {
+        x: minX - pad,
+        y: minY - pad,
+        w: maxX - minX + pad * 2,
+        h: maxY - minY + pad * 2,
+      };
+    }
+    case "shape": {
+      const x = Math.min(d.start.x, d.end.x);
+      const y = Math.min(d.start.y, d.end.y);
+      const w = Math.abs(d.end.x - d.start.x);
+      const h = Math.abs(d.end.y - d.start.y);
+      const pad = d.size / 2;
+      return { x: x - pad, y: y - pad, w: w + pad * 2, h: h + pad * 2 };
+    }
+    case "text": {
+      return textBoundsApprox(d);
+    }
+    case "sticky": {
+      return { x: d.position.x, y: d.position.y, w: STICKY_W, h: STICKY_H };
+    }
+  }
+}
+
+/* ───────── translation (for drag-to-move in Step 31c) ───────── */
+
+export function translateDrawable(
+  d: Drawable,
+  dx: number,
+  dy: number,
+): Drawable {
+  switch (d.kind) {
+    case "stroke":
+      return {
+        ...d,
+        points: d.points.map((p) => ({ x: p.x + dx, y: p.y + dy })),
+      };
+    case "shape":
+      return {
+        ...d,
+        start: { x: d.start.x + dx, y: d.start.y + dy },
+        end: { x: d.end.x + dx, y: d.end.y + dy },
+      };
+    case "text":
+      return {
+        ...d,
+        position: { x: d.position.x + dx, y: d.position.y + dy },
+      };
+    case "sticky":
+      return {
+        ...d,
+        position: { x: d.position.x + dx, y: d.position.y + dy },
+      };
+  }
+}
+
+/* ───────── permissive hit-test (for selection) ───────── */
+
+export function hitTestSelection(
+  worldPoint: Point,
+  drawables: Drawable[],
+): Drawable | null {
+  for (let i = drawables.length - 1; i >= 0; i--) {
+    const d = drawables[i];
+    if (pointInRect(worldPoint, getBounds(d))) return d;
+  }
+  return null;
+}
+
+/* ───────── export ───────── */
+
+export function exportCanvasAsPNG(
+  canvas: HTMLCanvasElement,
+  filename = "inkly-drawing.png",
+): void {
+  const out = document.createElement("canvas");
+  out.width = canvas.width;
+  out.height = canvas.height;
+  const ctx = out.getContext("2d");
+  if (!ctx) return;
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, out.width, out.height);
+  ctx.drawImage(canvas, 0, 0);
+  out.toBlob((blob) => {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }, "image/png");
 }
