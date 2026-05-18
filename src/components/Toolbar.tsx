@@ -131,7 +131,7 @@ export function Toolbar({ onUndo, onRedo, onClear, onExport }: ToolbarProps) {
           shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_-8px_rgba(0,0,0,0.12)]
         "
       >
-        {/* ─── pen / eraser segmented toggle ─── */}
+        {/* ─── pen / pixel-eraser segmented toggle ─── */}
         <div className="flex shrink-0 rounded-xl bg-neutral-100 p-0.5">
           <SegmentButton
             active={tool === "pen"}
@@ -143,11 +143,20 @@ export function Toolbar({ onUndo, onRedo, onClear, onExport }: ToolbarProps) {
           <SegmentButton
             active={tool === "eraser"}
             onClick={() => setTool("eraser")}
-            label="Eraser (E)"
+            label="Pixel eraser (E)"
           >
             <EraserIcon />
           </SegmentButton>
         </div>
+
+        {/* ─── object eraser ─── */}
+        <ToolButton
+          active={tool === "object-eraser"}
+          onClick={() => setTool("object-eraser")}
+          label="Object eraser (X)"
+        >
+          <ScissorsIcon />
+        </ToolButton>
 
         <Divider />
 
@@ -644,6 +653,22 @@ function TrashIcon() {
     <svg viewBox="0 0 24 24" fill="none" className={iconBase}>
       <path
         d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function ScissorsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={iconBase}>
+      <circle cx="6" cy="6" r="3" stroke="currentColor" strokeWidth="1.6" />
+      <circle cx="6" cy="18" r="3" stroke="currentColor" strokeWidth="1.6" />
+      <path
+        d="M20 4L8.12 15.88M14.47 14.48L20 20M8.12 8.12L12 12"
         stroke="currentColor"
         strokeWidth="1.6"
         strokeLinecap="round"

@@ -7,7 +7,8 @@ interface Shortcut {
 
 const SHORTCUTS: Shortcut[] = [
   { keys: ["P"], label: "Pen" },
-  { keys: ["E"], label: "Eraser" },
+  { keys: ["E"], label: "Pixel eraser" },
+  { keys: ["X"], label: "Object eraser" },
   { keys: ["R"], label: "Rectangle" },
   { keys: ["O"], label: "Ellipse" },
   { keys: ["L"], label: "Line" },

@@ -400,3 +400,156 @@ export function exportCanvasAsPNG(
     URL.revokeObjectURL(url);
   }, "image/png");
 }
+
+/* ───────── geometry for hit-testing ───────── */
+
+/** Distance from point p to segment ab. */
+function pointToSegmentDistance(p: Point, a: Point, b: Point): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+  // Project p onto the segment, parameter t in [0,1].
+  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const closestX = a.x + t * dx;
+  const closestY = a.y + t * dy;
+  return Math.hypot(p.x - closestX, p.y - closestY);
+}
+
+/** Closest distance from point p to any segment in a polyline. */
+function pointToPolylineDistance(p: Point, points: Point[]): number {
+  if (points.length === 0) return Infinity;
+  if (points.length === 1) {
+    return Math.hypot(p.x - points[0].x, p.y - points[0].y);
+  }
+  let min = Infinity;
+  for (let i = 0; i < points.length - 1; i++) {
+    const d = pointToSegmentDistance(p, points[i], points[i + 1]);
+    if (d < min) min = d;
+  }
+  return min;
+}
+
+/** Distance from point p to the outline of an axis-aligned rectangle. */
+function pointToRectOutlineDistance(
+  p: Point,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): number {
+  // The rect is four segments. Take the minimum distance to each.
+  const tl = { x, y };
+  const tr = { x: x + w, y };
+  const br = { x: x + w, y: y + h };
+  const bl = { x, y: y + h };
+  return Math.min(
+    pointToSegmentDistance(p, tl, tr),
+    pointToSegmentDistance(p, tr, br),
+    pointToSegmentDistance(p, br, bl),
+    pointToSegmentDistance(p, bl, tl),
+  );
+}
+
+/**
+ * Approximate distance from point p to an ellipse outline centered
+ * at (cx, cy) with radii (rx, ry).
+ *
+ * Exact distance-to-ellipse requires solving a quartic. The standard
+ * cheap approximation: normalize the point into a unit circle, find
+ * its closest point on the unit circle, denormalize. Good enough for
+ * hit-testing.
+ */
+function pointToEllipseDistance(
+  p: Point,
+  cx: number,
+  cy: number,
+  rx: number,
+  ry: number,
+): number {
+  if (rx === 0 || ry === 0) return Math.hypot(p.x - cx, p.y - cy);
+  // Vector from center to point, scaled into unit-circle space.
+  const nx = (p.x - cx) / rx;
+  const ny = (p.y - cy) / ry;
+  const len = Math.hypot(nx, ny);
+  if (len === 0) return Math.min(rx, ry); // dead-center; rough estimate
+  // Closest unit-circle point, projected back to ellipse space.
+  const closestX = cx + (nx / len) * rx;
+  const closestY = cy + (ny / len) * ry;
+  return Math.hypot(p.x - closestX, p.y - closestY);
+}
+
+/* ───────── full hit-test (for object eraser) ───────── */
+
+/**
+ * Hit-test against any drawable, accounting for stroke width and a
+ * small click-tolerance buffer. Returns the topmost match.
+ *
+ * @param tolerance Extra pixels added to each drawable's natural
+ *   hit-radius. In world space, so it stays click-friendly at all zooms.
+ */
+export function hitTestAny(
+  worldPoint: Point,
+  drawables: Drawable[],
+  tolerance = 4,
+): Drawable | null {
+  for (let i = drawables.length - 1; i >= 0; i--) {
+    const d = drawables[i];
+    if (didHit(worldPoint, d, tolerance)) return d;
+  }
+  return null;
+}
+
+function didHit(p: Point, d: Drawable, tolerance: number): boolean {
+  switch (d.kind) {
+    case "stroke": {
+      const r = d.size / 2 + tolerance;
+      return pointToPolylineDistance(p, d.points) <= r;
+    }
+    case "shape": {
+      const r = d.size / 2 + tolerance;
+      switch (d.variant) {
+        case "rect": {
+          const x = Math.min(d.start.x, d.end.x);
+          const y = Math.min(d.start.y, d.end.y);
+          const w = Math.abs(d.end.x - d.start.x);
+          const h = Math.abs(d.end.y - d.start.y);
+          return pointToRectOutlineDistance(p, x, y, w, h) <= r;
+        }
+        case "ellipse": {
+          const cx = (d.start.x + d.end.x) / 2;
+          const cy = (d.start.y + d.end.y) / 2;
+          const rx = Math.abs(d.end.x - d.start.x) / 2;
+          const ry = Math.abs(d.end.y - d.start.y) / 2;
+          return pointToEllipseDistance(p, cx, cy, rx, ry) <= r;
+        }
+        case "line":
+        case "arrow":
+          return pointToSegmentDistance(p, d.start, d.end) <= r;
+      }
+      return false;
+    }
+    case "text": {
+      // Re-use the same approximate bounds we already use for editing.
+      const lines = d.text.split("\n");
+      const maxLen = lines.reduce((m, l) => Math.max(m, l.length), 0);
+      const w = Math.max(maxLen * d.fontSize * 0.55, 40);
+      const h = lines.length * d.fontSize * 1.25;
+      return (
+        p.x >= d.position.x &&
+        p.x <= d.position.x + w &&
+        p.y >= d.position.y &&
+        p.y <= d.position.y + h
+      );
+    }
+    case "sticky": {
+      return (
+        p.x >= d.position.x &&
+        p.x <= d.position.x + STICKY_W &&
+        p.y >= d.position.y &&
+        p.y <= d.position.y + STICKY_H
+      );
+    }
+  }
+}

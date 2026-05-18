@@ -4,9 +4,12 @@ import { Toolbar } from "./components/Toolbar";
 import { Shortcuts } from "./components/Shortcuts";
 import { ZoomControls } from "./components/ZoomControls";
 import { TextEditor } from "./components/TextEditor";
+import { AuthModal } from "./components/AuthModal";
 import { useStore, type Tool } from "./lib/store";
+import { useAuth } from "./lib/useAuth";
 import {
   exportCanvasAsPNG,
+  hitTestAny,
   hitTestEditable,
   renderScene,
   setupCanvas,
@@ -52,9 +55,11 @@ function pinchMetrics(a: Point, b: Point) {
 }
 
 export default function App() {
+  // Subscribe to Supabase auth state — populates user / authReady in the store.
+  useAuth();
+
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
-
   const inProgressRef = useRef<Drawable | null>(null);
 
   const panningRef = useRef(false);
@@ -74,7 +79,11 @@ export default function App() {
   const drawables = useStore((s) => s.drawables);
   const view = useStore((s) => s.view);
   const editingId = useStore((s) => s.editingId);
+  const tool = useStore((s) => s.tool);
+  const user = useStore((s) => s.user);
+  const authReady = useStore((s) => s.authReady);
   const addDrawable = useStore((s) => s.addDrawable);
+  const removeDrawable = useStore((s) => s.removeDrawable);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
   const clearAll = useStore((s) => s.clearAll);
@@ -83,6 +92,9 @@ export default function App() {
   const startEditing = useStore((s) => s.startEditing);
 
   const [confirmingClear, setConfirmingClear] = useState(false);
+
+  /** Either the signed-in user's id, or "local" if not signed in (offline mode). */
+  const currentUserId = user?.id ?? "local";
 
   /* ───────── canvas lifecycle ───────── */
 
@@ -111,7 +123,7 @@ export default function App() {
     if (ctxRef.current) renderScene(ctxRef.current, drawables, view, editingId);
   }, [drawables, view, editingId]);
 
-  /* ───────── wheel + contextmenu (desktop) ───────── */
+  /* ───────── wheel + contextmenu ───────── */
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -173,10 +185,7 @@ export default function App() {
 
   const pointerPos = (e: React.PointerEvent<HTMLCanvasElement>): Point => {
     const rect = e.currentTarget.getBoundingClientRect();
-    return {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
-    };
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
   };
 
   const shouldPan = (e: React.PointerEvent<HTMLCanvasElement>): boolean => {
@@ -197,19 +206,15 @@ export default function App() {
 
   const screenToWorld = (p: Point): Point => {
     const v = useStore.getState().view;
-    return {
-      x: (p.x - v.panX) / v.zoom,
-      y: (p.y - v.panY) / v.zoom,
-    };
+    return { x: (p.x - v.panX) / v.zoom, y: (p.y - v.panY) / v.zoom };
   };
 
-  /** Spawn a new text item at the given world point and start editing it. */
   const spawnText = (worldPoint: Point) => {
     const { color } = useStore.getState();
     const t: TextItem = {
       id: uid(),
       kind: "text",
-      userId: "local",
+      userId: currentUserId,
       position: worldPoint,
       text: "",
       color,
@@ -220,16 +225,14 @@ export default function App() {
     startEditing(t.id);
   };
 
-  /** Spawn a new sticky note centered at the given world point. */
   const spawnSticky = (worldPoint: Point) => {
     const { stickyColor } = useStore.getState();
-    // Center the sticky on the click so it feels deliberate.
     const STICKY_W = 240;
     const STICKY_H = 180;
     const n: StickyNote = {
       id: uid(),
       kind: "sticky",
-      userId: "local",
+      userId: currentUserId,
       position: {
         x: worldPoint.x - STICKY_W / 2,
         y: worldPoint.y - STICKY_H / 2,
@@ -242,15 +245,21 @@ export default function App() {
     startEditing(n.id);
   };
 
-  const beginDrawable = (worldStart: Point): Drawable | null => {
-    const { color, size, tool } = useStore.getState();
+  const eraseAt = (worldPoint: Point) => {
+    const { drawables: d } = useStore.getState();
+    const hit = hitTestAny(worldPoint, d, 4);
+    if (hit) removeDrawable(hit.id);
+  };
 
-    if (tool === "pen" || tool === "eraser") {
+  const beginDrawable = (worldStart: Point): Drawable | null => {
+    const { color, size, tool: t } = useStore.getState();
+
+    if (t === "pen" || t === "eraser") {
       const s: Stroke = {
         id: uid(),
         kind: "stroke",
-        userId: "local",
-        tool,
+        userId: currentUserId,
+        tool: t,
         color,
         size,
         points: [worldStart],
@@ -259,12 +268,12 @@ export default function App() {
       return s;
     }
 
-    if (isShapeTool(tool)) {
-      const variant = SHAPE_VARIANTS[tool]!;
+    if (isShapeTool(t)) {
+      const variant = SHAPE_VARIANTS[t]!;
       const s: Shape = {
         id: uid(),
         kind: "shape",
-        userId: "local",
+        userId: currentUserId,
         variant,
         start: worldStart,
         end: worldStart,
@@ -281,7 +290,6 @@ export default function App() {
   const updateInProgress = (worldPoint: Point) => {
     const d = inProgressRef.current;
     if (!d) return;
-
     if (d.kind === "stroke") {
       d.points.push(worldPoint);
     } else if (d.kind === "shape") {
@@ -290,9 +298,6 @@ export default function App() {
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    // If we're currently editing text, let the TextEditor's outside-click
-    // handler commit before anything else happens. (It runs in the capture
-    // phase, so by the time we get here, editingId may have flipped to null.)
     if (useStore.getState().editingId) return;
 
     const screenPoint = pointerPos(e);
@@ -317,16 +322,18 @@ export default function App() {
     }
 
     const worldPoint = screenToWorld(screenPoint);
-    const { tool } = useStore.getState();
+    const { tool: t } = useStore.getState();
 
-    // Text and sticky tools spawn an editor immediately — they don't
-    // go through the in-progress drag pipeline.
-    if (tool === "text") {
+    if (t === "text") {
       spawnText(worldPoint);
       return;
     }
-    if (tool === "sticky") {
+    if (t === "sticky") {
       spawnSticky(worldPoint);
+      return;
+    }
+    if (t === "object-eraser") {
+      eraseAt(worldPoint);
       return;
     }
 
@@ -376,6 +383,12 @@ export default function App() {
       return;
     }
 
+    if (useStore.getState().tool === "object-eraser" && e.buttons === 1) {
+      const worldPoint = screenToWorld(screenPoint);
+      eraseAt(worldPoint);
+      return;
+    }
+
     const inProgress = inProgressRef.current;
     if (!inProgress || !ctxRef.current) return;
 
@@ -399,9 +412,7 @@ export default function App() {
 
       if (e.pointerType === "touch") {
         touchesRef.current.delete(e.pointerId);
-        if (touchesRef.current.size < 2) {
-          pinchStateRef.current = null;
-        }
+        if (touchesRef.current.size < 2) pinchStateRef.current = null;
         if (touchesRef.current.size >= 1) {
           inProgressRef.current = null;
           return;
@@ -430,13 +441,9 @@ export default function App() {
     [addDrawable],
   );
 
-  /** Double-click → start editing existing text/sticky under the cursor. */
   const handleDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
-    const screen: Point = {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
-    };
+    const screen: Point = { x: e.clientX - rect.left, y: e.clientY - rect.top };
     const world = screenToWorld(screen);
     const hit = hitTestEditable(world, useStore.getState().drawables);
     if (hit && (hit.kind === "text" || hit.kind === "sticky")) {
@@ -470,6 +477,7 @@ export default function App() {
         const k = e.key.toLowerCase();
         if (k === "p") useStore.getState().setTool("pen");
         else if (k === "e") useStore.getState().setTool("eraser");
+        else if (k === "x") useStore.getState().setTool("object-eraser");
         else if (k === "r") useStore.getState().setTool("rect");
         else if (k === "o") useStore.getState().setTool("ellipse");
         else if (k === "l") useStore.getState().setTool("line");
@@ -489,15 +497,20 @@ export default function App() {
       ? "cursor-grabbing"
       : cursorMode === "grab"
         ? "cursor-grab"
-        : useStore.getState().tool === "text" ||
-            useStore.getState().tool === "sticky"
+        : tool === "text" || tool === "sticky"
           ? "cursor-text"
-          : "cursor-crosshair";
+          : tool === "object-eraser"
+            ? "cursor-pointer"
+            : "cursor-crosshair";
 
-  // The drawable currently being edited (if any), for the overlay.
   const editingDrawable = editingId
     ? drawables.find((d) => d.id === editingId)
     : null;
+
+  // The gate: while we're still checking for a session, show nothing
+  // (or a loading splash, depending on taste). When ready, if there's
+  // no user, the canvas renders but the modal blocks interaction.
+  const showAuth = authReady && !user;
 
   return (
     <div className="grid h-dvh grid-rows-[auto_1fr] overflow-hidden bg-white">
@@ -529,7 +542,7 @@ export default function App() {
           onDoubleClick={handleDoubleClick}
         />
 
-        {drawables.length === 0 && (
+        {drawables.length === 0 && !showAuth && (
           <div className="pointer-events-none absolute inset-0 grid animate-fade-in place-items-center">
             <div className="flex flex-col items-center gap-3 text-center">
               <div className="grid h-12 w-12 place-items-center rounded-2xl bg-white shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_-8px_rgba(0,0,0,0.12)]">
@@ -566,7 +579,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Text/sticky editor overlay */}
         {editingDrawable &&
           (editingDrawable.kind === "text" ||
             editingDrawable.kind === "sticky") && (
@@ -584,6 +596,9 @@ export default function App() {
 
         <ZoomControls canvasRef={canvasRef} />
         <Shortcuts />
+
+        {/* Real auth gate: shown only when auth has resolved AND no user is signed in. */}
+        {showAuth && <AuthModal />}
 
         {confirmingClear && (
           <div

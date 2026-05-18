@@ -1,19 +1,18 @@
 /**
  * Inkly — global state
  *
- * Single source of truth for: drawables on the canvas (world-space),
- * the current pan/zoom view, the undo/redo stacks, the active tool
- * selection, and the id of the drawable currently being text-edited.
+ * Single source of truth for: drawables on the canvas, the current
+ * pan/zoom view, the undo/redo stacks, the active tool, the id of
+ * the drawable currently being text-edited, and the signed-in user.
  */
 
 import { create } from "zustand";
-import type { Drawable, StickyColor, View } from "../types";
+import type { Drawable, StickyColor, User, View } from "../types";
 
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 8;
 const DEFAULT_VIEW: View = { panX: 0, panY: 0, zoom: 1 };
 
-/** Every tool the user can pick. */
 export type Tool =
   | "pen"
   | "eraser"
@@ -26,14 +25,13 @@ export type Tool =
   | "sticky";
 
 interface InklyState {
+  // Auth state
+  user: User | null;
+  authReady: boolean;
+
   // Drawing state
   drawables: Drawable[];
   redoStack: Drawable[];
-  /**
-   * The id of the drawable currently in DOM-editor mode (text/sticky).
-   * The canvas renderer skips this one while it's being edited so it
-   * doesn't double-render under the live textarea.
-   */
   editingId: string | null;
 
   // View state
@@ -44,6 +42,10 @@ interface InklyState {
   size: number;
   tool: Tool;
   stickyColor: StickyColor;
+
+  // Auth actions
+  setUser: (user: User | null) => void;
+  setAuthReady: (ready: boolean) => void;
 
   // Drawable actions
   addDrawable: (d: Drawable) => void;
@@ -76,6 +78,9 @@ function clampZoom(z: number): number {
 
 export const useStore = create<InklyState>((set, get) => ({
   // ─── initial state ──────────────────────────────────────────
+  user: null,
+  authReady: false,
+
   drawables: [],
   redoStack: [],
   editingId: null,
@@ -87,6 +92,10 @@ export const useStore = create<InklyState>((set, get) => ({
   tool: "pen",
   stickyColor: "yellow",
 
+  // ─── auth actions ───────────────────────────────────────────
+  setUser: (user) => set({ user }),
+  setAuthReady: (authReady) => set({ authReady }),
+
   // ─── drawable actions ───────────────────────────────────────
   addDrawable: (d) =>
     set((state) => ({
@@ -94,13 +103,6 @@ export const useStore = create<InklyState>((set, get) => ({
       redoStack: [],
     })),
 
-  /**
-   * Apply a partial patch to an existing drawable. Used while text
-   * editing — we keep the drawable in the store with placeholder text
-   * and update it as the user types. (`as Drawable` cast: the
-   * discriminated union doesn't merge cleanly with Partial, but at
-   * runtime we only ever patch fields that exist on the matched kind.)
-   */
   updateDrawable: (id, patch) =>
     set((state) => ({
       drawables: state.drawables.map((d) =>
@@ -145,8 +147,6 @@ export const useStore = create<InklyState>((set, get) => ({
 
   finishEditing: () =>
     set((state) => {
-      // If the drawable being edited has empty content, drop it
-      // entirely — empty text/stickies are clutter from accidental clicks.
       const editingId = state.editingId;
       if (!editingId) return { editingId: null };
       const d = state.drawables.find((x) => x.id === editingId);
